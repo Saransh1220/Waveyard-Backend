@@ -185,18 +185,36 @@ func TestSpecHandler_Get_ShortCodeAndSlugLookups(t *testing.T) {
 }
 
 func TestSpecHandler_Get_CacheBehaviour(t *testing.T) {
-	t.Run("cache hit returns cached body verbatim", func(t *testing.T) {
-		fr := newFakeRedis(t, `{"processing_status":"completed","title":"Cached"}`)
-		h, specSvc, _, _ := newHandlerWithRedis(fr.ln.Addr().String())
+	t.Run("cache hit uses fresh analytics for each viewer", func(t *testing.T) {
+		fr := newFakeRedis(t, `{"processing_status":"completed","title":"Cached","analytics":{"is_favorited":true}}`)
+		h, specSvc, _, analyticsSvc := newHandlerWithRedis(fr.ln.Addr().String())
 		specID := uuid.New()
-		specSvc.On("GetSpec", mock.Anything, specID).Return(&domain.Spec{ID: specID}, nil).Once()
+		viewer := uuid.New()
+		specSvc.On("GetSpec", mock.Anything, specID).Return(&domain.Spec{ID: specID}, nil).Times(3)
+		analyticsSvc.On("GetPublicAnalytics", mock.Anything, specID, &viewer).
+			Return(&analyticsDomain.PublicAnalytics{IsFavorited: true}, nil).Once()
+		analyticsSvc.On("GetPublicAnalytics", mock.Anything, specID, &viewer).
+			Return(&analyticsDomain.PublicAnalytics{IsFavorited: false}, nil).Once()
+		analyticsSvc.On("GetPublicAnalytics", mock.Anything, specID, (*uuid.UUID)(nil)).
+			Return(nil, errors.New("down")).Once()
+
+		for _, want := range []bool{true, false} {
+			w := httptest.NewRecorder()
+			h.Get(w, withUser(getReq(specID.String()), viewer))
+
+			require.Equal(t, http.StatusOK, w.Code)
+			assert.Equal(t, "HIT", w.Header().Get("X-Cache"))
+			assert.Equal(t, "private, no-store", w.Header().Get("Cache-Control"))
+			var response catalogHTTP.SpecResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+			assert.Equal(t, "Cached", response.Title)
+			require.NotNil(t, response.Analytics)
+			assert.Equal(t, want, response.Analytics.IsFavorited)
+		}
 
 		w := httptest.NewRecorder()
 		h.Get(w, getReq(specID.String()))
-
-		require.Equal(t, http.StatusOK, w.Code)
-		assert.Equal(t, "HIT", w.Header().Get("X-Cache"))
-		assert.Equal(t, `{"processing_status":"completed","title":"Cached"}`, w.Body.String())
+		assert.NotContains(t, w.Body.String(), `"analytics"`)
 	})
 
 	t.Run("cached processing entry is invalidated and rebuilt", func(t *testing.T) {

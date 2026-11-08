@@ -107,36 +107,39 @@ func (h *SpecHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Try Cache
+	// Cache only the catalog fields. Analytics belongs to the current request.
 	displayCurrency := middleware.BuyerCurrencyFromContext(r.Context())
-	cacheKey := "spec:prices-v2:" + spec.ID.String() + ":" + displayCurrency // Normalize cache key to always use UUID and currency
+	cacheKey := "spec:prices-v2:" + spec.ID.String() + ":" + displayCurrency
+	var response *SpecResponse
+	cacheStatus := "MISS"
 	if val, ok := h.cacheGet(r.Context(), cacheKey); ok {
-		var cached struct {
-			ProcessingStatus domain.ProcessingStatus `json:"processing_status"`
-		}
-		if err := json.Unmarshal([]byte(val), &cached); err == nil && cached.ProcessingStatus == domain.ProcessingStatusProcessing {
-			h.cacheDelSpec(r.Context(), spec.ID)
-		} else {
-			// Cache Hit!
-			log.Printf("[CACHE HIT] Spec ID: %s", spec.ID.String())
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Cache", "HIT")
-			w.Write([]byte(val))
-			return
+		var cached SpecResponse
+		if err := json.Unmarshal([]byte(val), &cached); err == nil {
+			if cached.ProcessingStatus == string(domain.ProcessingStatusProcessing) {
+				h.cacheDelSpec(r.Context(), spec.ID)
+			} else {
+				// Older cache entries may contain a different viewer's analytics.
+				cached.Analytics = nil
+				response = &cached
+				cacheStatus = "HIT"
+			}
 		}
 	}
 
-	log.Printf("[CACHE MISS] Spec ID: %s", spec.ID.String())
+	if response == nil {
+		h.sanitizeSpec(spec)
+		response = ToSpecResponseForCurrency(spec, displayCurrency)
+		if spec.ProcessingStatus == domain.ProcessingStatusCompleted {
+			if jsonBytes, err := json.Marshal(response); err == nil {
+				go h.cacheSet(context.Background(), cacheKey, jsonBytes, 10*time.Minute)
+			}
+		}
+	}
 
-	h.sanitizeSpec(spec)
-
-	// Get user ID if authenticated (optional)
 	var userIDPtr *uuid.UUID
 	if userID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID); ok {
 		userIDPtr = &userID
 	}
-
-	response := ToSpecResponseForCurrency(spec, displayCurrency)
 
 	// Fetch analytics data
 	analytics, err := h.analyticsService.GetPublicAnalytics(r.Context(), spec.ID, userIDPtr)
@@ -149,16 +152,9 @@ func (h *SpecHandler) Get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if spec.ProcessingStatus == domain.ProcessingStatusCompleted {
-		// 3. Save completed specs to cache. Processing specs can receive file URLs moments later.
-		go func() {
-			jsonBytes, _ := json.Marshal(response)
-			h.cacheSet(context.Background(), cacheKey, jsonBytes, 10*time.Minute)
-		}()
-	}
-
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Cache", "MISS")
+	w.Header().Set("X-Cache", cacheStatus)
 	json.NewEncoder(w).Encode(response)
 }
 
