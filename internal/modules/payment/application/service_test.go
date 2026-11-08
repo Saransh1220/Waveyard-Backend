@@ -58,6 +58,15 @@ func (m *orderRepoMock) ListByProducer(ctx context.Context, producerID uuid.UUID
 	}
 	return args.Get(0).([]domain.OrderWithBuyer), args.Int(1), args.Error(2)
 }
+func (m *orderRepoMock) AttachCheckoutDetails(ctx context.Context, id uuid.UUID, providerCheckoutID, checkoutURL string) error {
+	args := m.Called(ctx, id, providerCheckoutID, checkoutURL)
+	return args.Error(0)
+}
+func (m *orderRepoMock) MarkRefunded(ctx context.Context, id uuid.UUID) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
 
 type paymentRepoMock struct{ mock.Mock }
 
@@ -86,6 +95,11 @@ func (m *paymentRepoMock) GetByProviderPaymentID(ctx context.Context, provider, 
 	}
 	return args.Get(0).(*domain.Payment), args.Error(1)
 }
+func (m *paymentRepoMock) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.PaymentStatus) error {
+	args := m.Called(ctx, id, status)
+	return args.Error(0)
+}
+
 
 type licenseRepoMock struct{ mock.Mock }
 
@@ -209,6 +223,7 @@ func newPaymentSvc() (*paymentService, *orderRepoMock, *paymentRepoMock, *licens
 	fs := new(fileSvcMock)
 	uf := new(userFinderMock)
 	es := new(emailSenderMock)
+	or.On("AttachCheckoutDetails", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 	return &paymentService{
 		orderRepo:   or,
 		paymentRepo: pr,

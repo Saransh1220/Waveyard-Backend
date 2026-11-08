@@ -20,4 +20,13 @@ var (
 	ErrProviderCompletesByWebhook = errors.New("provider completes by webhook")
 	ErrMissingWebhookSecret       = errors.New("webhook secret is not configured")
 	ErrMissingPaymentID           = errors.New("missing payment id")
+
+	// RW-1-9 Idempotency, Retries and Refunds
+	ErrIdempotencyConflict   = errors.New("idempotency key conflict: request parameters do not match original request")
+	ErrOrderReservedInFlight = errors.New("checkout creation in flight")
+	ErrRefundAlreadyExists   = errors.New("a refund operation already exists for this payment")
+	ErrRefundNotEligible     = errors.New("order is not eligible for refund")
+	ErrRefundAmountMismatch  = errors.New("refund amount exceeds captured payment")
+	ErrRefundProviderFailed  = errors.New("provider rejected refund")
+	ErrDistinctCaptureAnomaly = errors.New("distinct capture reported for already paid order")
 )

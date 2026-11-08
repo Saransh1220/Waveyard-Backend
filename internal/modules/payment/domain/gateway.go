@@ -14,7 +14,7 @@ const (
 
 // Gateway is the strategy every payment provider implements: how to start a
 // checkout. How a payment is later confirmed differs per provider, so that
-// lives in the optional ClientConfirmer and WebhookConfirmer interfaces.
+// lives in the optional ClientConfirmer, WebhookConfirmer, and Refunder interfaces.
 type Gateway interface {
 	Name() string
 	CreateCheckout(ctx context.Context, req CheckoutRequest) (CheckoutSession, error)
@@ -58,4 +58,24 @@ type ClientConfirmer interface {
 // valid but needs no action.
 type WebhookConfirmer interface {
 	ParseWebhook(payload []byte, headers map[string]string) (*PaymentConfirmation, error)
+}
+
+type RefundRequest struct {
+	IdempotencyKey    string
+	OrderID           uuid.UUID
+	ProviderPaymentID string
+	AmountMinor       int
+	Currency          string
+	Reason            string
+}
+
+type RefundResult struct {
+	ProviderRefundID string
+	Status           string // "succeeded", "pending", "failed"
+	FailureReason    *string
+}
+
+// Refunder is implemented by gateways that support server-initiated refunds.
+type Refunder interface {
+	Refund(ctx context.Context, req RefundRequest) (*RefundResult, error)
 }

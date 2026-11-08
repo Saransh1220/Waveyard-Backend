@@ -61,8 +61,9 @@ func (h *PaymentHandler) ProviderWebhook(w http.ResponseWriter, r *http.Request)
 		case errors.Is(err, domain.ErrOrderNotFound),
 			errors.Is(err, domain.ErrProviderMismatch),
 			errors.Is(err, domain.ErrAmountMismatch),
+			errors.Is(err, domain.ErrDistinctCaptureAnomaly),
 			errors.Is(err, domain.ErrOrderNotPayable):
-			// Permanent business rejection: log alert, return 200 so provider stops retrying!
+			// Permanent business rejection or anomaly: alert, return 200 so provider stops retrying!
 			log.Printf("[ALERT][PAYMENT_REJECTED] trace_id=%s provider=%s reason=%v", traceID, provider, err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -103,6 +104,7 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		ExpectedRevision    *int64  `json:"expected_revision,omitempty"`
 		ExpectedAmountMinor *int    `json:"expected_amount_minor,omitempty"`
 		ExpectedCurrency    *string `json:"expected_currency,omitempty"`
+		IdempotencyKey      string  `json:"idempotency_key,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -135,6 +137,11 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		expectedPriceID = &parsedPriceID
 	}
 
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		idempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	}
+
 	input := application.CreateOrderInput{
 		UserID:              userID,
 		SpecID:              specID,
@@ -144,10 +151,31 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		ExpectedRevision:    req.ExpectedRevision,
 		ExpectedAmountMinor: req.ExpectedAmountMinor,
 		ExpectedCurrency:    req.ExpectedCurrency,
+		IdempotencyKey:      idempotencyKey,
 	}
 
 	order, err := h.service.CreateOrderWithOffer(r.Context(), input)
 	if err != nil {
+		if errors.Is(err, domain.ErrIdempotencyConflict) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{
+				"code":    "IDEMPOTENCY_CONFLICT",
+				"message": "An order with this idempotency key already exists with different parameters",
+			})
+			return
+		}
+		if errors.Is(err, domain.ErrOrderReservedInFlight) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"code":        "CHECKOUT_IN_FLIGHT",
+				"message":     "Checkout creation is in flight, please retry shortly",
+				"retry_after": 2,
+			})
+			return
+		}
 		var priceMismatch *application.PriceMismatchError
 		if errors.As(err, &priceMismatch) {
 			w.Header().Set("Content-Type", "application/json")
@@ -160,7 +188,12 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, money.ErrInvalidCurrency) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"code":    "INVALID_CURRENCY",
+				"message": "Requested currency is invalid or unsupported",
+			})
 			return
 		}
 		if errors.Is(err, money.ErrPriceUnavailable) {
@@ -172,6 +205,8 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		traceID := middleware.GetRequestID(r.Context())
+		log.Printf("[ALERT][PAYMENT_ORDER_ERROR] trace_id=%s user_id=%s error=%v", traceID, userID, err)
 		http.Error(w, "failed to create order: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -240,6 +275,172 @@ func (h *PaymentHandler) VerifyPayment(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *PaymentHandler) CreateRefund(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	orderIDStr := r.PathValue("id")
+	orderID, err := uuid.Parse(orderIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"code": "INVALID_ORDER_ID", "message": "invalid order id"})
+		return
+	}
+
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+
+	var body struct {
+		Reason string `json:"reason"`
+		Notes  string `json:"notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"code": "INVALID_BODY", "message": "invalid request body"})
+		return
+	}
+
+	if strings.TrimSpace(body.Reason) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"code": "REASON_REQUIRED", "message": "refund reason is required"})
+		return
+	}
+
+	resp, err := h.service.InitiateRefund(r.Context(), application.CreateRefundInput{
+		OrderID:        orderID,
+		AdminID:        adminID,
+		IdempotencyKey: idempotencyKey,
+		Reason:         body.Reason,
+		Notes:          body.Notes,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrOrderNotFound):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"code": "ORDER_NOT_FOUND", "message": "order not found"})
+			return
+		case errors.Is(err, domain.ErrRefundAlreadyExists):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"code": "REFUND_ALREADY_EXISTS", "message": "a refund operation already exists for this payment"})
+			return
+		case errors.Is(err, domain.ErrRefundNotEligible):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"code": "REFUND_NOT_ELIGIBLE", "message": "order is not eligible for refund"})
+			return
+		case errors.Is(err, domain.ErrRefundProviderFailed):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]string{"code": "PROVIDER_REFUND_FAILED", "message": "payment provider rejected refund"})
+			return
+		default:
+			log.Printf("[ALERT][REFUND_ERROR] order_id=%s admin_id=%s error=%v", orderID, adminID, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"code": "INTERNAL_ERROR", "message": "failed to process refund"})
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *PaymentHandler) GetRefunds(w http.ResponseWriter, r *http.Request) {
+	orderIDStr := r.PathValue("id")
+	orderID, err := uuid.Parse(orderIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"code": "INVALID_ORDER_ID", "message": "invalid order id"})
+		return
+	}
+
+	refunds, err := h.service.GetOrderRefunds(r.Context(), orderID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"code": "INTERNAL_ERROR", "message": "failed to load refunds"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"data": refunds})
+}
+
+func (h *PaymentHandler) ListWebhookEvents(w http.ResponseWriter, r *http.Request) {
+	filter := domain.WebhookEventFilter{
+		Provider: r.URL.Query().Get("provider"),
+		Status:   r.URL.Query().Get("status"),
+	}
+	if orderIDStr := r.URL.Query().Get("order_id"); orderIDStr != "" {
+		if id, err := uuid.Parse(orderIDStr); err == nil {
+			filter.OrderID = &id
+		}
+	}
+
+	page := 1
+	if pStr := r.URL.Query().Get("page"); pStr != "" {
+		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
+			page = p
+		}
+	}
+	limit := 20
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 100 {
+			limit = l
+		}
+	}
+
+	offset := (page - 1) * limit
+	events, total, err := h.service.ListWebhookEvents(r.Context(), filter, limit, offset)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"code": "INTERNAL_ERROR", "message": "failed to load webhook events"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"data": events,
+		"metadata": map[string]any{
+			"total": total,
+			"page":  page,
+			"limit": limit,
+		},
+	})
+}
+
+func (h *PaymentHandler) RequeueWebhookEvent(w http.ResponseWriter, r *http.Request) {
+	eventIDStr := r.PathValue("id")
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"code": "INVALID_EVENT_ID", "message": "invalid event id"})
+		return
+	}
+
+	if err := h.service.RequeueWebhookEvent(r.Context(), eventID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"code": "INTERNAL_ERROR", "message": "failed to requeue event"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"requeued": true})
+}
+
 func (h *PaymentHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	// Auth check
 	userID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID)
@@ -248,54 +449,50 @@ func (h *PaymentHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get order ID from path
-	orderID, err := uuid.Parse(r.PathValue("id"))
+	// Parse order ID from URL path
+	orderIDStr := r.PathValue("id")
+	orderID, err := uuid.Parse(orderIDStr)
 	if err != nil {
 		http.Error(w, "invalid order_id", http.StatusBadRequest)
 		return
 	}
 
-	// Fetch order
 	order, err := h.service.GetOrder(r.Context(), orderID, userID)
 	if err != nil {
 		http.Error(w, "order not found", http.StatusNotFound)
 		return
 	}
 
-	// Return order
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(order)
 }
 
 func (h *PaymentHandler) GetOrderStatus(w http.ResponseWriter, r *http.Request) {
-	// Auth check
-	userID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID)
+	requesterID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	// Get order ID from path
-	orderID, err := uuid.Parse(r.PathValue("id"))
+	orderIDStr := r.PathValue("id")
+	orderID, err := uuid.Parse(orderIDStr)
 	if err != nil {
 		http.Error(w, "order not found", http.StatusNotFound)
 		return
 	}
 
-	// Fetch order status
-	status, err := h.service.GetOrderStatus(r.Context(), orderID, userID)
+	status, err := h.service.GetOrderStatus(r.Context(), orderID, requesterID)
 	if err != nil {
 		http.Error(w, "order not found", http.StatusNotFound)
 		return
 	}
 
-	// Return order status
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
 
 func (h *PaymentHandler) GetUserOrders(w http.ResponseWriter, r *http.Request) {
-	// Get authenticated user
+	// Auth check
 	userID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -323,14 +520,14 @@ func (h *PaymentHandler) GetUserOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PaymentHandler) GetUserLicenses(w http.ResponseWriter, r *http.Request) {
-	// Get authenticated user
+	// Auth check
 	userID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	// Parse pagination
+	// Parse pagination and filters
 	page := 1
 	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
 		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
@@ -338,9 +535,10 @@ func (h *PaymentHandler) GetUserLicenses(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Fetch licenses
 	search := r.URL.Query().Get("q")
 	licenseType := r.URL.Query().Get("type")
+
+	// Fetch licenses
 	licenses, total, err := h.service.GetUserLicenses(r.Context(), userID, page, search, licenseType)
 	if err != nil {
 		http.Error(w, "failed to fetch licenses", http.StatusInternalServerError)
@@ -378,7 +576,6 @@ func (h *PaymentHandler) GetLicenseDownloads(w http.ResponseWriter, r *http.Requ
 	downloads, err := h.service.GetLicenseDownloads(r.Context(), licenseID, userID)
 
 	if err != nil {
-		// Determine status code based on error message
 		statusCode := http.StatusInternalServerError
 		if err.Error() == "license not found" || err.Error() == "spec not found" {
 			statusCode = http.StatusNotFound

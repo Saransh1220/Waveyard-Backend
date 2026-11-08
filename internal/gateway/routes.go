@@ -181,6 +181,12 @@ func SetupRoutes(config RouterConfig) *http.ServeMux {
 		mux.Handle("PATCH /admin/specs/{id}", authz(middleware.PermAdminSpecsWrite)(http.HandlerFunc(config.AdminHandler.UpdateSpec)))
 		mux.Handle("DELETE /admin/specs/{id}", authz(middleware.PermAdminSpecsWrite)(http.HandlerFunc(config.AdminHandler.DeleteSpec)))
 		mux.Handle("GET /admin/orders", authz(middleware.PermAdminOrdersRead)(http.HandlerFunc(config.AdminHandler.ListOrders)))
+		if config.PaymentHandler != nil {
+			mux.Handle("POST /admin/orders/{id}/refunds", authz(middleware.PermAdminOrdersRefund)(http.HandlerFunc(config.PaymentHandler.CreateRefund)))
+			mux.Handle("GET /admin/orders/{id}/refunds", authz(middleware.PermAdminOrdersRead)(http.HandlerFunc(config.PaymentHandler.GetRefunds)))
+			mux.Handle("GET /admin/payment-webhooks", authz(middleware.PermAdminAuditRead)(http.HandlerFunc(config.PaymentHandler.ListWebhookEvents)))
+			mux.Handle("POST /admin/payment-webhooks/{id}/requeue", authz(middleware.PermAdminAuditRead)(http.HandlerFunc(config.PaymentHandler.RequeueWebhookEvent)))
+		}
 		mux.Handle("GET /admin/licenses", authz(middleware.PermAdminLicensesRead)(http.HandlerFunc(config.AdminHandler.ListLicenses)))
 		mux.Handle("GET /admin/analytics/overview", authz(middleware.PermAdminAnalyticsRead)(http.HandlerFunc(config.AdminHandler.AnalyticsOverview)))
 		mux.Handle("GET /admin/audit-log", authz(middleware.PermAdminAuditRead)(http.HandlerFunc(config.AdminHandler.ListAuditLog)))

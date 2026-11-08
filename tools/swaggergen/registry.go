@@ -72,6 +72,11 @@ type AdminUpdateSpecRequest struct {
 	IsDeleted        *bool    `json:"is_deleted,omitempty"`
 }
 
+type AdminCreateRefundRequest struct {
+	Reason string `json:"reason"`
+	Notes  string `json:"notes,omitempty"`
+}
+
 // GetEndpointsRegistry returns all route definitions mapped to real Go structs
 func GetEndpointsRegistry() []EndpointDef {
 	return []EndpointDef{
@@ -898,6 +903,65 @@ func GetEndpointsRegistry() []EndpointDef {
 				{Name: "page", Type: "integer", Description: "Page number, starting at 1"},
 				{Name: "limit", Type: "integer", Description: "Page size chosen by the client (default 50, capped at 100)"},
 				{Name: "q", Type: "string", Description: "Search text"},
+			},
+			SuccessCode: 200,
+		},
+		{
+			Method:      "POST",
+			Path:        "/admin/orders/{id}/refunds",
+			Tags:        []string{"Admin"},
+			OperationID: "adminCreateOrderRefund",
+			Summary:     "Admin issue full refund for order",
+			Description: "Initiates a provider refund and revokes licenses upon success",
+			Auth:        "bearer",
+			PathParams: []ParamDef{
+				{Name: "id", Type: "string", Format: "uuid", Required: true, Description: "Order UUID"},
+			},
+			RequestBody:  AdminCreateRefundRequest{},
+			SuccessCode:  201,
+			ResponseBody: payment_app.OrderRefundResponse{},
+		},
+		{
+			Method:      "GET",
+			Path:        "/admin/orders/{id}/refunds",
+			Tags:        []string{"Admin"},
+			OperationID: "adminGetOrderRefunds",
+			Summary:     "Admin list order refunds",
+			Description: "Lists all refund records for a given order",
+			Auth:        "bearer",
+			PathParams: []ParamDef{
+				{Name: "id", Type: "string", Format: "uuid", Required: true, Description: "Order UUID"},
+			},
+			SuccessCode:  200,
+			ResponseBody: []payment_domain.OrderRefund{},
+		},
+		{
+			Method:      "GET",
+			Path:        "/admin/payment-webhooks",
+			Tags:        []string{"Admin"},
+			OperationID: "adminListPaymentWebhooks",
+			Summary:     "Admin list payment webhook inbox events",
+			Description: "Lists webhook inbox events for audit and operations",
+			Auth:        "bearer",
+			QueryParams: []ParamDef{
+				{Name: "page", Type: "integer", Description: "Page number, starting at 1"},
+				{Name: "limit", Type: "integer", Description: "Page size chosen by the client"},
+				{Name: "provider", Type: "string", Description: "Provider filter (razorpay, dodo)"},
+				{Name: "status", Type: "string", Description: "Processing status (pending, processing, completed, failed, dead_letter)"},
+			},
+			SuccessCode:  200,
+			ResponseBody: []payment_domain.PaymentWebhookEvent{},
+		},
+		{
+			Method:      "POST",
+			Path:        "/admin/payment-webhooks/{id}/requeue",
+			Tags:        []string{"Admin"},
+			OperationID: "adminRequeuePaymentWebhook",
+			Summary:     "Admin requeue payment webhook event",
+			Description: "Requeues a failed or dead-lettered webhook event for processing",
+			Auth:        "bearer",
+			PathParams: []ParamDef{
+				{Name: "id", Type: "string", Format: "uuid", Required: true, Description: "Webhook Event UUID"},
 			},
 			SuccessCode: 200,
 		},

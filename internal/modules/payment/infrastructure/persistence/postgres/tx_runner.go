@@ -26,14 +26,18 @@ func NewTxRunner(db *sqlx.DB) domain.TxRunner {
 }
 
 type paymentTx struct {
-	orderRepo   domain.OrderRepository
-	paymentRepo domain.PaymentRepository
-	licenseRepo domain.LicenseRepository
+	orderRepo       domain.OrderRepository
+	paymentRepo     domain.PaymentRepository
+	licenseRepo     domain.LicenseRepository
+	idempotencyRepo domain.IdempotencyRepository
+	refundRepo      domain.RefundRepository
 }
 
-func (pt *paymentTx) OrderRepo() domain.OrderRepository     { return pt.orderRepo }
-func (pt *paymentTx) PaymentRepo() domain.PaymentRepository { return pt.paymentRepo }
-func (pt *paymentTx) LicenseRepo() domain.LicenseRepository { return pt.licenseRepo }
+func (pt *paymentTx) OrderRepo() domain.OrderRepository             { return pt.orderRepo }
+func (pt *paymentTx) PaymentRepo() domain.PaymentRepository         { return pt.paymentRepo }
+func (pt *paymentTx) LicenseRepo() domain.LicenseRepository         { return pt.licenseRepo }
+func (pt *paymentTx) IdempotencyRepo() domain.IdempotencyRepository { return pt.idempotencyRepo }
+func (pt *paymentTx) RefundRepo() domain.RefundRepository           { return pt.refundRepo }
 
 func (r *PgTxRunner) WithTx(ctx context.Context, fn func(tx domain.PaymentTx) error) error {
 	tx, err := r.db.BeginTxx(ctx, nil)
@@ -45,9 +49,11 @@ func (r *PgTxRunner) WithTx(ctx context.Context, fn func(tx domain.PaymentTx) er
 	}()
 
 	pt := &paymentTx{
-		orderRepo:   NewOrderRepositoryWithDB(tx),
-		paymentRepo: NewPaymentRepositoryWithDB(tx),
-		licenseRepo: NewLicenseRepositoryWithDB(tx),
+		orderRepo:       NewOrderRepositoryWithDB(tx),
+		paymentRepo:     NewPaymentRepositoryWithDB(tx),
+		licenseRepo:     NewLicenseRepositoryWithDB(tx),
+		idempotencyRepo: NewIdempotencyRepositoryWithDB(tx),
+		refundRepo:      NewRefundRepositoryWithDB(tx),
 	}
 
 	if err := fn(pt); err != nil {

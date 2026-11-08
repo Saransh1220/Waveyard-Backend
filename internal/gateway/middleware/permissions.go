@@ -20,6 +20,7 @@ const (
 	PermAdminSpecsRead     Permission = "admin:specs:read"
 	PermAdminSpecsWrite    Permission = "admin:specs:write"
 	PermAdminOrdersRead    Permission = "admin:orders:read"
+	PermAdminOrdersRefund  Permission = "admin:orders:refund"
 	PermAdminLicensesRead  Permission = "admin:licenses:read"
 	PermAdminAnalyticsRead Permission = "admin:analytics:read"
 	PermAdminAuditRead     Permission = "admin:audit:read"
@@ -41,6 +42,7 @@ var AllPermissions = []Permission{
 	PermAdminSpecsRead,
 	PermAdminSpecsWrite,
 	PermAdminOrdersRead,
+	PermAdminOrdersRefund,
 	PermAdminLicensesRead,
 	PermAdminAnalyticsRead,
 	PermAdminAuditRead,

@@ -71,3 +71,9 @@ func (r *PgPaymentRepository) GetByProviderPaymentID(ctx context.Context, provid
 	err := r.db.GetContext(ctx, payment, query, provider, providerPaymentID)
 	return payment, err
 }
+
+func (r *PgPaymentRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.PaymentStatus) error {
+	query := `UPDATE payments SET status = $1, updated_at = NOW() WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, status, id)
+	return err
+}

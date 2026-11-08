@@ -36,6 +36,7 @@ var (
 	_ domain.Gateway          = (*Gateway)(nil)
 	_ domain.ClientConfirmer  = (*Gateway)(nil)
 	_ domain.WebhookConfirmer = (*Gateway)(nil)
+	_ domain.Refunder         = (*Gateway)(nil)
 )
 
 func NewGateway(cfg Config) *Gateway {
@@ -199,6 +200,34 @@ func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*doma
 	}
 
 	return c, nil
+}
+
+func (g *Gateway) Refund(_ context.Context, req domain.RefundRequest) (*domain.RefundResult, error) {
+	extraHeaders := map[string]string{}
+	if req.IdempotencyKey != "" {
+		extraHeaders["X-Refund-Idempotency"] = req.IdempotencyKey
+	}
+	body := map[string]interface{}{
+		"notes": map[string]interface{}{
+			"order_id": req.OrderID.String(),
+			"reason":   req.Reason,
+		},
+	}
+	res, err := g.client.Payment.Refund(req.ProviderPaymentID, int(req.AmountMinor), body, extraHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("razorpay refund failed: %w", err)
+	}
+	refundID := stringFromAny(res["id"])
+	status := strings.ToLower(stringFromAny(res["status"]))
+	if status == "processed" {
+		status = domain.RefundStatusSucceeded
+	} else if status == "" {
+		status = domain.RefundStatusPending
+	}
+	return &domain.RefundResult{
+		ProviderRefundID: refundID,
+		Status:           status,
+	}, nil
 }
 
 func (g *Gateway) sign(orderID, paymentID string) string {

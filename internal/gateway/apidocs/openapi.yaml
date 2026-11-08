@@ -252,6 +252,168 @@ paths:
         "500":
           description: ""
           $ref: '#/components/responses/InternalError'
+  /admin/orders/{id}/refunds:
+    get:
+      tags:
+        - Admin
+      operationId: adminGetOrderRefunds
+      summary: Admin list order refunds
+      description: Lists all refund records for a given order
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Operation successful
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrderRefund'
+        "400":
+          description: ""
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          description: ""
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: ""
+          $ref: '#/components/responses/Forbidden'
+        "500":
+          description: ""
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - Admin
+      operationId: adminCreateOrderRefund
+      summary: Admin issue full refund for order
+      description: Initiates a provider refund and revokes licenses upon success
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Order UUID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateRefundRequest'
+      responses:
+        "201":
+          description: Operation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderRefundResponse'
+        "400":
+          description: ""
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          description: ""
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: ""
+          $ref: '#/components/responses/Forbidden'
+        "500":
+          description: ""
+          $ref: '#/components/responses/InternalError'
+  /admin/payment-webhooks:
+    get:
+      tags:
+        - Admin
+      operationId: adminListPaymentWebhooks
+      summary: Admin list payment webhook inbox events
+      description: Lists webhook inbox events for audit and operations
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          description: Page number, starting at 1
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          description: Page size chosen by the client
+          schema:
+            type: integer
+        - name: provider
+          in: query
+          description: Provider filter (razorpay, dodo)
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Processing status (pending, processing, completed, failed, dead_letter)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Operation successful
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PaymentWebhookEvent'
+        "400":
+          description: ""
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          description: ""
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: ""
+          $ref: '#/components/responses/Forbidden'
+        "500":
+          description: ""
+          $ref: '#/components/responses/InternalError'
+  /admin/payment-webhooks/{id}/requeue:
+    post:
+      tags:
+        - Admin
+      operationId: adminRequeuePaymentWebhook
+      summary: Admin requeue payment webhook event
+      description: Requeues a failed or dead-lettered webhook event for processing
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Webhook Event UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: ""
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          description: ""
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: ""
+          $ref: '#/components/responses/Forbidden'
+        "500":
+          description: ""
+          $ref: '#/components/responses/InternalError'
   /admin/roles:
     get:
       tags:
@@ -2608,6 +2770,15 @@ components:
       name: refresh_token
       description: HTTP-only cookie managed automatically by the browser across session endpoints.
   schemas:
+    AdminCreateRefundRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        notes:
+          type: string
+        reason:
+          type: string
     AdminUpdateSpecRequest:
       type: object
       properties:
@@ -3288,6 +3459,103 @@ components:
           format: uuid
         license_key:
           type: string
+    OrderRefund:
+      type: object
+      required:
+        - id
+        - order_id
+        - payment_id
+        - user_id
+        - admin_id
+        - idempotency_key
+        - amount
+        - currency
+        - provider
+        - provider_payment_id
+        - reason
+        - status
+        - created_at
+        - updated_at
+      properties:
+        admin_id:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        currency:
+          type: string
+        failure_reason:
+          type: string
+          nullable: true
+        id:
+          type: string
+          format: uuid
+        idempotency_key:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        order_id:
+          type: string
+          format: uuid
+        payment_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+        provider_payment_id:
+          type: string
+        provider_refund_id:
+          type: string
+          nullable: true
+        reason:
+          type: string
+        status:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        user_id:
+          type: string
+          format: uuid
+    OrderRefundResponse:
+      type: object
+      required:
+        - id
+        - order_id
+        - payment_id
+        - amount
+        - currency
+        - status
+        - reason
+        - created_at
+      properties:
+        amount:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        currency:
+          type: string
+        id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+        payment_id:
+          type: string
+          format: uuid
+        provider_refund_id:
+          type: string
+          nullable: true
+        reason:
+          type: string
+        status:
+          type: string
     OrderStatusResponse:
       type: object
       required:
@@ -3311,6 +3579,82 @@ components:
           type: integer
         status:
           type: string
+    PaymentWebhookEvent:
+      type: object
+      required:
+        - id
+        - provider
+        - event_id
+        - event_type
+        - payload
+        - status
+        - attempts
+        - max_attempts
+        - next_retry_at
+        - created_at
+        - updated_at
+      properties:
+        attempts:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        event_id:
+          type: string
+        event_type:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        id:
+          type: string
+          format: uuid
+        last_error:
+          type: string
+          nullable: true
+        lease_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        locked_at:
+          type: string
+          format: date-time
+          nullable: true
+        max_attempts:
+          type: integer
+        next_retry_at:
+          type: string
+          format: date-time
+        order_id:
+          type: string
+          format: uuid
+          nullable: true
+        payload:
+          type: string
+          format: byte
+        provider:
+          type: string
+        provider_checkout_id:
+          type: string
+          nullable: true
+        provider_payment_id:
+          type: string
+          nullable: true
+        reported_amount:
+          type: integer
+          nullable: true
+        reported_currency:
+          type: string
+          nullable: true
+        status:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+        worker_id:
+          type: string
+          nullable: true
     PresignedUploadResponse:
       type: object
       required:
