@@ -26,7 +26,11 @@ CREATE TABLE IF NOT EXISTS order_idempotency_keys (
 CREATE INDEX IF NOT EXISTS idx_order_idempotency_order_id ON order_idempotency_keys(order_id);
 
 -- 3. Webhook events inbox: durable receipt before ACK and async retry processing
-CREATE TABLE IF NOT EXISTS payment_webhook_events (
+-- Migration 000030 created a processed-event log with a different schema.
+-- Preserve that log for rollback and create a separate inbox for new events.
+ALTER TABLE payment_webhook_events RENAME TO payment_webhook_events_legacy;
+
+CREATE TABLE payment_webhook_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider VARCHAR(40) NOT NULL,
     event_id VARCHAR(255) NOT NULL,
