@@ -127,10 +127,15 @@ func (r *PgWebhookRepository) ClaimNextBatch(ctx context.Context, workerID strin
 	}
 
 	query := fmt.Sprintf(`
-		WITH due_events AS (
+		WITH exhausted_events AS (
+			UPDATE payment_webhook_events
+			SET status = 'needs_review', last_error = 'processing lease expired after final attempt',
+				locked_at = NULL, lease_expires_at = NULL, updated_at = NOW()
+			WHERE status = 'processing' AND lease_expires_at <= NOW() AND attempts >= max_attempts
+		), due_events AS (
 			SELECT id
 			FROM payment_webhook_events
-			WHERE status IN ('queued', 'failed')
+			WHERE status IN ('queued', 'failed', 'processing')
 			  AND next_retry_at <= NOW()
 			  AND attempts < max_attempts
 			  AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
@@ -171,20 +176,20 @@ func (r *PgWebhookRepository) ClaimNextBatch(ctx context.Context, workerID strin
 	return events, rows.Err()
 }
 
-func (r *PgWebhookRepository) MarkCompleted(ctx context.Context, id uuid.UUID) error {
+func (r *PgWebhookRepository) MarkCompleted(ctx context.Context, id uuid.UUID, lockedAt *time.Time) error {
 	query := `
 		UPDATE payment_webhook_events
 		SET status = 'completed',
 			locked_at = NULL,
 			lease_expires_at = NULL,
 			updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'processing' AND locked_at = $2
 	`
-	_, err := r.db.ExecContext(ctx, query, id)
+	_, err := r.db.ExecContext(ctx, query, id, lockedAt)
 	return err
 }
 
-func (r *PgWebhookRepository) MarkFailed(ctx context.Context, id uuid.UUID, lastErr string, retryAfter time.Duration, status string) error {
+func (r *PgWebhookRepository) MarkFailed(ctx context.Context, id uuid.UUID, lockedAt *time.Time, lastErr string, retryAfter time.Duration, status string) error {
 	if status == "" {
 		status = domain.WebhookEventStatusFailed
 	}
@@ -200,10 +205,10 @@ func (r *PgWebhookRepository) MarkFailed(ctx context.Context, id uuid.UUID, last
 			locked_at = NULL,
 			lease_expires_at = NULL,
 			updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'processing' AND locked_at = $4
 	`, retrySeconds)
 
-	_, err := r.db.ExecContext(ctx, query, id, status, lastErr)
+	_, err := r.db.ExecContext(ctx, query, id, status, lastErr, lockedAt)
 	return err
 }
 

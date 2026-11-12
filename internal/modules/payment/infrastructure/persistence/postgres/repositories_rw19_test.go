@@ -281,7 +281,7 @@ func TestPgWebhookRepository(t *testing.T) {
 	})
 
 	t.Run("ClaimNextBatch", func(t *testing.T) {
-		mock.ExpectQuery(`WITH due_events AS`).
+		mock.ExpectQuery(`due_events AS`).
 			WithArgs("worker-1").
 			WillReturnRows(sqlmock.NewRows(cols).AddRow(
 				id, "dodo", "evt_1", "payment.succeeded", nil,
@@ -298,14 +298,14 @@ func TestPgWebhookRepository(t *testing.T) {
 
 	t.Run("MarkCompleted, MarkFailed, Requeue", func(t *testing.T) {
 		mock.ExpectExec(`UPDATE payment_webhook_events SET status = 'completed'`).
-			WithArgs(id).
+			WithArgs(id, now).
 			WillReturnResult(sqlmock.NewResult(1, 1))
-		require.NoError(t, repo.MarkCompleted(ctx, id))
+		require.NoError(t, repo.MarkCompleted(ctx, id, &now))
 
 		mock.ExpectExec(`UPDATE payment_webhook_events SET status = \$2, last_error = \$3`).
-			WithArgs(id, "failed", "err msg").
+			WithArgs(id, "failed", "err msg", now).
 			WillReturnResult(sqlmock.NewResult(1, 1))
-		require.NoError(t, repo.MarkFailed(ctx, id, "err msg", 0, ""))
+		require.NoError(t, repo.MarkFailed(ctx, id, &now, "err msg", 0, ""))
 
 		mock.ExpectExec(`UPDATE payment_webhook_events SET status = 'queued'`).
 			WithArgs(id).
@@ -519,7 +519,6 @@ func TestPgOrderAndPaymentRepository_RW19Methods(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
-
 
 func TestPgTxRunner_Accessors(t *testing.T) {
 	db, mock, cleanup := newMockDB(t)

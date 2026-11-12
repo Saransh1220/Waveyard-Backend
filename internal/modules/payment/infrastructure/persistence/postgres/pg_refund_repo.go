@@ -48,7 +48,7 @@ func (r *PgRefundRepository) ReserveRefund(ctx context.Context, ref *domain.Orde
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 		)
-		ON CONFLICT (idempotency_key) DO NOTHING
+		ON CONFLICT DO NOTHING
 		RETURNING id, order_id, payment_id, user_id, admin_id,
 			idempotency_key, amount, currency, provider,
 			provider_refund_id, provider_payment_id, reason, notes,
@@ -87,6 +87,9 @@ func (r *PgRefundRepository) ReserveRefund(ctx context.Context, ref *domain.Orde
 		found, getErr := r.GetByIdempotencyKey(ctx, ref.IdempotencyKey)
 		if getErr != nil {
 			return nil, false, getErr
+		}
+		if found == nil {
+			return nil, false, domain.ErrRefundAlreadyExists
 		}
 		return found, false, nil
 	}

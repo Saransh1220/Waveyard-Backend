@@ -89,13 +89,13 @@ func (m *webhookRepoMock) ClaimNextBatch(ctx context.Context, workerID string, b
 	return args.Get(0).([]domain.PaymentWebhookEvent), args.Error(1)
 }
 
-func (m *webhookRepoMock) MarkCompleted(ctx context.Context, id uuid.UUID) error {
-	args := m.Called(ctx, id)
+func (m *webhookRepoMock) MarkCompleted(ctx context.Context, id uuid.UUID, lockedAt *time.Time) error {
+	args := m.Called(ctx, id, lockedAt)
 	return args.Error(0)
 }
 
-func (m *webhookRepoMock) MarkFailed(ctx context.Context, id uuid.UUID, lastErr string, retryAfter time.Duration, status string) error {
-	args := m.Called(ctx, id, lastErr, retryAfter, status)
+func (m *webhookRepoMock) MarkFailed(ctx context.Context, id uuid.UUID, lockedAt *time.Time, lastErr string, retryAfter time.Duration, status string) error {
+	args := m.Called(ctx, id, lockedAt, lastErr, retryAfter, status)
 	return args.Error(0)
 }
 
@@ -309,19 +309,21 @@ func TestPaymentService_WebhookAdminAndWorker(t *testing.T) {
 		s.SetWebhookRepository(wRepo)
 
 		oid := uuid.New()
+		lockedAt := time.Now()
+		paymentID := "p1"
 		event := domain.PaymentWebhookEvent{
-			ID:       eID,
-			Provider: domain.ProviderDodo,
-			Payload:  []byte(`{"data":{"order_id":"` + oid.String() + `","payment_id":"p1"}}`),
-			Headers:  map[string]string{"webhook-signature": "v1,abc"},
-			Status:   domain.WebhookEventStatusQueued,
+			OrderID:           &oid,
+			ProviderPaymentID: &paymentID,
+			LockedAt:          &lockedAt,
+			ID:                eID,
+			Provider:          domain.ProviderDodo,
+			Payload:           []byte(`{"data":{"order_id":"` + oid.String() + `","payment_id":"p1"}}`),
+			Headers:           map[string]string{"webhook-signature": "v1,abc"},
+			Status:            domain.WebhookEventStatusQueued,
 		}
 
 		wRepo.On("ClaimNextBatch", ctx, "w1", 10, 30*time.Second).Return([]domain.PaymentWebhookEvent{event}, nil).Once()
-		fakeOf(s, domain.ProviderDodo).webhook = &domain.PaymentConfirmation{
-			OrderID:           oid,
-			ProviderPaymentID: "p1",
-		}
+
 		or.On("GetByID", ctx, oid).Return(&domain.Order{
 			ID:       oid,
 			Status:   domain.OrderStatusPaid,
@@ -331,7 +333,7 @@ func TestPaymentService_WebhookAdminAndWorker(t *testing.T) {
 			OrderID:           oid,
 			ProviderPaymentID: "p1",
 		}, nil).Once()
-		wRepo.On("MarkCompleted", ctx, eID).Return(nil).Once()
+		wRepo.On("MarkCompleted", ctx, eID, &lockedAt).Return(nil).Once()
 
 		processed, err := s.ProcessNextWebhookBatch(ctx, "w1", 10, 30*time.Second)
 		require.NoError(t, err)

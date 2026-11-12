@@ -8,11 +8,11 @@ import (
 	auth_app "github.com/saransh1220/blueprint-audio/internal/modules/auth/application"
 	auth_domain "github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
 	catalog_dto "github.com/saransh1220/blueprint-audio/internal/modules/catalog/interfaces/http"
+	fx_http "github.com/saransh1220/blueprint-audio/internal/modules/fx/interfaces/http"
 	notification_domain "github.com/saransh1220/blueprint-audio/internal/modules/notification/domain"
 	payment_app "github.com/saransh1220/blueprint-audio/internal/modules/payment/application"
 	payment_domain "github.com/saransh1220/blueprint-audio/internal/modules/payment/domain"
 	user_app "github.com/saransh1220/blueprint-audio/internal/modules/user/application"
-	fx_http "github.com/saransh1220/blueprint-audio/internal/modules/fx/interfaces/http"
 )
 
 // Common response schemas
@@ -514,6 +514,16 @@ func GetEndpointsRegistry() []EndpointDef {
 			RequestBody:  CreateOrderRequest{},
 			SuccessCode:  200,
 			ResponseBody: payment_domain.Order{},
+			HeaderParams: []ParamDef{
+				{Name: "Idempotency-Key", Type: "string", Description: "Opaque checkout intent key, up to 128 characters"},
+			},
+			Responses: map[string]Response{
+				"202": {
+					Description: "Checkout is in flight. Retry with the same key.",
+					Headers:     map[string]Header{"Retry-After": {Schema: &Property{Type: "integer"}}},
+				},
+				"409": {Description: "Idempotency key conflict, changed price, or unavailable offer"},
+			},
 		},
 		{
 			Method:      "GET",
@@ -920,6 +930,12 @@ func GetEndpointsRegistry() []EndpointDef {
 			RequestBody:  AdminCreateRefundRequest{},
 			SuccessCode:  201,
 			ResponseBody: payment_app.OrderRefundResponse{},
+			HeaderParams: []ParamDef{
+				{Name: "Idempotency-Key", Type: "string", Description: "Opaque refund intent key, up to 128 characters"},
+			},
+			Responses: map[string]Response{
+				"409": {Description: "Refund operation already exists"},
+			},
 		},
 		{
 			Method:      "GET",
@@ -1209,5 +1225,3 @@ func RegisterKnownTypes(r *Reflector) {
 	// Register Admin types if needed
 	_ = reflect.TypeOf(admin_http.AdminHandler{})
 }
-
-

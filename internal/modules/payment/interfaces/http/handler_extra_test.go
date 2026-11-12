@@ -160,12 +160,12 @@ func TestPaymentHandler_ServiceErrorStatuses(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.CreateOrder(w, authedReq("POST", "/o", `{"spec_id":"`+oid+`","license_option_id":"`+oid+`"}`))
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "failed to create order: boom")
+	assert.Equal(t, "failed to create order\n", w.Body.String())
 
 	w = httptest.NewRecorder()
 	h.VerifyPayment(w, authedReq("POST", "/v", `{"order_id":"`+oid+`"}`))
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "boom")
+	assert.Equal(t, "payment verification failed\n", w.Body.String())
 
 	w = httptest.NewRecorder()
 	r := authedReq("GET", "/o/"+oid, "")

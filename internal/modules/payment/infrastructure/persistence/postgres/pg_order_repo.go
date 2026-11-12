@@ -120,7 +120,8 @@ func (r *PgOrderRepository) GetByProviderCheckoutID(ctx context.Context, provide
 }
 
 func (r *PgOrderRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.OrderStatus) error {
-	query := `UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2`
+	query := `UPDATE orders SET status = $1, updated_at = NOW()
+		WHERE id = $2 AND status IN ('pending', 'processing', 'failed')`
 	_, err := r.db.ExecContext(ctx, query, status, id)
 	return err
 }

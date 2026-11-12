@@ -306,6 +306,11 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: Idempotency-Key
+          in: header
+          description: Opaque refund intent key, up to 128 characters
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -328,6 +333,8 @@ paths:
         "403":
           description: ""
           $ref: '#/components/responses/Forbidden'
+        "409":
+          description: Refund operation already exists
         "500":
           description: ""
           $ref: '#/components/responses/InternalError'
@@ -1664,6 +1671,12 @@ paths:
       description: Initiates checkout for a specific license option
       security:
         - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Opaque checkout intent key, up to 128 characters
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -1677,6 +1690,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Order'
+        "202":
+          description: Checkout is in flight. Retry with the same key.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
         "400":
           description: ""
           $ref: '#/components/responses/BadRequest'
@@ -1686,6 +1705,8 @@ paths:
         "403":
           description: ""
           $ref: '#/components/responses/Forbidden'
+        "409":
+          description: Idempotency key conflict, changed price, or unavailable offer
         "500":
           description: ""
           $ref: '#/components/responses/InternalError'

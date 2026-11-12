@@ -3,8 +3,8 @@ package postgres_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 

@@ -193,31 +193,12 @@ func (s *paymentService) CreateOrderWithOffer(ctx context.Context, input CreateO
 	fingerprint := ComputeCanonicalFingerprint(input)
 
 	if s.idempotencyRepo != nil && clientProvided {
-		existingKey, err := s.idempotencyRepo.GetByUserAndKey(ctx, input.UserID, key)
-		if err == nil && existingKey != nil {
-			if existingKey.RequestHash != fingerprint {
-				return nil, domain.ErrIdempotencyConflict
-			}
-			if existingKey.OrderID != nil {
-				existingOrder, oErr := s.orderRepo.GetByID(ctx, *existingKey.OrderID)
-				if oErr == nil && existingOrder != nil {
-					switch existingOrder.Status {
-					case domain.OrderStatusPaid, domain.OrderStatusCancelled, domain.OrderStatusRefunded, domain.OrderStatusFailed:
-						existingOrder.FillClientFields()
-						existingOrder.CheckoutURL = nil
-						return existingOrder, nil
-					case domain.OrderStatusPending, domain.OrderStatusProcessing:
-						if existingKey.CheckoutURL != nil && *existingKey.CheckoutURL != "" {
-							existingOrder.CheckoutURL = existingKey.CheckoutURL
-						}
-						existingOrder.FillClientFields()
-						return existingOrder, nil
-					}
-				}
-			}
-			if existingKey.CheckoutState == domain.CheckoutStateClaiming || existingKey.CheckoutState == domain.CheckoutStateReserved {
-				return nil, domain.ErrOrderReservedInFlight
-			}
+		existing, err := s.idempotencyRepo.GetByUserAndKey(ctx, input.UserID, key)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return s.replayCheckout(ctx, existing, fingerprint)
 		}
 	}
 
@@ -291,6 +272,41 @@ func (s *paymentService) CreateOrderWithOffer(ctx context.Context, input CreateO
 
 	return s.createOrderFromSpec(ctx, spec, licenseOption, offer, input, fingerprint)
 }
+
+func (s *paymentService) replayCheckout(ctx context.Context, key *domain.OrderIdempotencyKey, fingerprint string) (*domain.Order, error) {
+	if key.RequestHash != fingerprint {
+		return nil, domain.ErrIdempotencyConflict
+	}
+	if key.OrderID == nil {
+		return nil, domain.ErrOrderReservedInFlight
+	}
+	order, err := s.orderRepo.GetByID(ctx, *key.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	switch order.Status {
+	case domain.OrderStatusPending, domain.OrderStatusProcessing:
+		if key.CheckoutState != domain.CheckoutStateReady {
+			return nil, domain.ErrOrderReservedInFlight
+		}
+		if !order.ExpiresAt.IsZero() && !time.Now().Before(order.ExpiresAt) {
+			order.Status = domain.OrderStatusFailed
+			break
+		}
+		order.FillClientFields()
+		if order.CheckoutURL != nil || order.RazorpayOrderID != nil {
+			return order, nil
+		}
+		return nil, domain.ErrOrderReservedInFlight
+	}
+	order.CheckoutURL = nil
+	order.ProviderCheckoutID = nil
+	order.RazorpayOrderID = nil
+	return order, nil
+}
+
+// Roll back the losing order before replaying the winning reservation.
+var errCheckoutReserved = errors.New("checkout already reserved")
 
 func (s *paymentService) createOrderFromSpec(
 	ctx context.Context,
@@ -374,13 +390,16 @@ func (s *paymentService) createOrderFromSpec(
 			if rErr != nil {
 				return rErr
 			}
-			if !created && res.RequestHash != fingerprint {
-				return domain.ErrIdempotencyConflict
-			}
 			idempotencyRecord = res
+			if !created {
+				return errCheckoutReserved
+			}
 		}
 		return nil
 	})
+	if errors.Is(txErr, errCheckoutReserved) {
+		return s.replayCheckout(ctx, idempotencyRecord, fingerprint)
+	}
 	if txErr != nil {
 		return nil, txErr
 	}
@@ -388,9 +407,13 @@ func (s *paymentService) createOrderFromSpec(
 	var currentGen = 1
 	if s.idempotencyRepo != nil && idempotencyRecord != nil {
 		claimed, newGen, cErr := s.idempotencyRepo.Claim(ctx, idempotencyRecord.ID, idempotencyRecord.AttemptGeneration, 45*time.Second)
-		if cErr == nil && claimed {
-			currentGen = newGen
+		if cErr != nil {
+			return nil, cErr
 		}
+		if !claimed {
+			return nil, domain.ErrOrderReservedInFlight
+		}
+		currentGen = newGen
 	}
 
 	session, err := gateway.CreateCheckout(ctx, domain.CheckoutRequest{
@@ -398,21 +421,30 @@ func (s *paymentService) createOrderFromSpec(
 		SpecTitle:   spec.Title,
 		LicenseName: licenseOption.Name,
 	})
-	if err != nil {
+	if err != nil || session.ProviderRef == "" || (order.Provider == domain.ProviderDodo && session.CheckoutURL == "") {
 		if s.idempotencyRepo != nil && idempotencyRecord != nil {
 			_ = s.idempotencyRepo.MarkFailed(ctx, idempotencyRecord.ID, currentGen, domain.CheckoutStateReconciling)
+		}
+		if err == nil {
+			err = errors.New("provider returned incomplete checkout details")
 		}
 		return nil, err
 	}
 
+	if err := s.getTxRunner().WithTx(ctx, func(tx domain.PaymentTx) error {
+		if err := tx.OrderRepo().AttachCheckoutDetails(ctx, order.ID, session.ProviderRef, session.CheckoutURL); err != nil {
+			return err
+		}
+		if idempotencyRecord != nil {
+			return tx.IdempotencyRepo().AttachCheckoutResult(ctx, idempotencyRecord.ID, currentGen, session.ProviderRef, session.CheckoutURL, domain.CheckoutStateReady)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	order.ProviderCheckoutID = &session.ProviderRef
 	if session.CheckoutURL != "" {
 		order.CheckoutURL = &session.CheckoutURL
-	}
-
-	_ = s.orderRepo.AttachCheckoutDetails(ctx, order.ID, session.ProviderRef, session.CheckoutURL)
-	if s.idempotencyRepo != nil && idempotencyRecord != nil {
-		_ = s.idempotencyRepo.AttachCheckoutResult(ctx, idempotencyRecord.ID, currentGen, session.ProviderRef, session.CheckoutURL, domain.CheckoutStateReady)
 	}
 
 	order.FillClientFields()
@@ -532,46 +564,36 @@ func (s *paymentService) HandleWebhook(ctx context.Context, provider string, pay
 	}
 
 	if s.webhookRepo != nil {
+		if confirmation.ReportedAmountMinor <= 0 || confirmation.ReportedAmountMinor > 1<<31-1 || confirmation.ReportedCurrency == "" {
+			return domain.ErrMalformedPayload
+		}
 		amt := int(confirmation.ReportedAmountMinor)
+		// Save only metadata derived from the verified envelope, never arbitrary request headers.
+		metadata := map[string]string{"signature": confirmation.Signature}
+		if confirmation.Method != nil {
+			metadata["method"] = *confirmation.Method
+		}
+		if confirmation.Email != nil {
+			metadata["email"] = *confirmation.Email
+		}
 		ev := &domain.PaymentWebhookEvent{
-			Provider:            provider,
-			EventID:             eventID,
-			EventType:           "payment.captured",
-			OrderID:             &confirmation.OrderID,
-			ProviderCheckoutID:  &confirmation.ProviderCheckoutID,
-			ProviderPaymentID:   &confirmation.ProviderPaymentID,
-			ReportedAmount:      &amt,
-			ReportedCurrency:    &confirmation.ReportedCurrency,
-			Payload:             payload,
-			Headers:             headers,
-			Status:              domain.WebhookEventStatusQueued,
+			Provider:           provider,
+			EventID:            eventID,
+			EventType:          "payment.captured",
+			OrderID:            &confirmation.OrderID,
+			ProviderCheckoutID: &confirmation.ProviderCheckoutID,
+			ProviderPaymentID:  &confirmation.ProviderPaymentID,
+			ReportedAmount:     &amt,
+			ReportedCurrency:   &confirmation.ReportedCurrency,
+			Payload:            payload,
+			Headers:            metadata,
+			Status:             domain.WebhookEventStatusQueued,
 		}
-		existing, inserted, iErr := s.webhookRepo.InsertEvent(ctx, ev)
-		if iErr != nil {
-			return iErr
+		if confirmation.OrderID == uuid.Nil {
+			ev.OrderID = nil
 		}
-		if !inserted && existing.Status == domain.WebhookEventStatusCompleted {
-			return nil
-		}
-
-		processErr := s.processCapture(ctx, provider, confirmation)
-		if processErr == nil {
-			_ = s.webhookRepo.MarkCompleted(ctx, existing.ID)
-			return nil
-		}
-
-		switch {
-		case errors.Is(processErr, domain.ErrOrderNotFound),
-			errors.Is(processErr, domain.ErrProviderMismatch),
-			errors.Is(processErr, domain.ErrAmountMismatch),
-			errors.Is(processErr, domain.ErrDistinctCaptureAnomaly),
-			errors.Is(processErr, domain.ErrOrderNotPayable):
-			_ = s.webhookRepo.MarkFailed(ctx, existing.ID, processErr.Error(), 0, domain.WebhookEventStatusNeedsReview)
-			return processErr
-		default:
-			_ = s.webhookRepo.MarkFailed(ctx, existing.ID, processErr.Error(), 15*time.Second, domain.WebhookEventStatusFailed)
-			return processErr
-		}
+		_, _, err := s.webhookRepo.InsertEvent(ctx, ev)
+		return err
 	}
 
 	return s.processCapture(ctx, provider, confirmation)
@@ -591,7 +613,9 @@ func (s *paymentService) processCapture(ctx context.Context, provider string, co
 		return domain.ErrOrderNotFound
 	}
 
-	if order.Provider != provider {
+	if order.Provider != provider ||
+		(confirmation.ProviderCheckoutID != "" && order.ProviderCheckoutID != nil &&
+			*order.ProviderCheckoutID != confirmation.ProviderCheckoutID) {
 		return domain.ErrProviderMismatch
 	}
 
@@ -606,14 +630,17 @@ func (s *paymentService) processCapture(ctx context.Context, provider string, co
 
 	if order.Status == domain.OrderStatusPaid {
 		existingPayment, pErr := s.paymentRepo.GetByOrderID(ctx, order.ID)
-		if pErr == nil && existingPayment != nil {
-			if existingPayment.ProviderPaymentID == confirmation.ProviderPaymentID {
-				return nil
-			}
-			log.Printf("[ALERT][PAYMENT_ANOMALY_DISTINCT_CAPTURE] order_id=%s original_payment=%s second_payment=%s", order.ID, existingPayment.ProviderPaymentID, confirmation.ProviderPaymentID)
-			return domain.ErrDistinctCaptureAnomaly
+		if pErr != nil {
+			return pErr
 		}
-		return nil
+		if existingPayment == nil {
+			return domain.ErrOrderNotPayable
+		}
+		if existingPayment.ProviderPaymentID == confirmation.ProviderPaymentID {
+			return nil
+		}
+		log.Printf("[ALERT][PAYMENT_ANOMALY_DISTINCT_CAPTURE] order_id=%s original_payment=%s second_payment=%s", order.ID, existingPayment.ProviderPaymentID, confirmation.ProviderPaymentID)
+		return domain.ErrDistinctCaptureAnomaly
 	}
 
 	if order.Status == domain.OrderStatusCancelled || order.Status == domain.OrderStatusRefunded {
@@ -636,46 +663,52 @@ func (s *paymentService) ProcessNextWebhookBatch(ctx context.Context, workerID s
 
 	processedCount := 0
 	for _, event := range events {
-		gateway, gErr := s.gateways.ByName(event.Provider)
-		if gErr != nil {
-			_ = s.webhookRepo.MarkFailed(ctx, event.ID, gErr.Error(), 30*time.Second, domain.WebhookEventStatusFailed)
-			continue
+		// Intake has already authenticated the event. Process the persisted facts even
+		// when the original signature timestamp has aged out.
+		confirmation := &domain.PaymentConfirmation{Signature: event.Headers["signature"]}
+		if method := event.Headers["method"]; method != "" {
+			confirmation.Method = &method
 		}
-		confirmer, ok := gateway.(domain.WebhookConfirmer)
-		if !ok {
-			_ = s.webhookRepo.MarkFailed(ctx, event.ID, "gateway does not support webhooks", 0, domain.WebhookEventStatusNeedsReview)
-			continue
+		if email := event.Headers["email"]; email != "" {
+			confirmation.Email = &email
 		}
-		confirmation, pErr := confirmer.ParseWebhook(event.Payload, event.Headers)
-		if pErr != nil {
-			_ = s.webhookRepo.MarkFailed(ctx, event.ID, pErr.Error(), 0, domain.WebhookEventStatusNeedsReview)
-			continue
+		if event.OrderID != nil {
+			confirmation.OrderID = *event.OrderID
 		}
-		if confirmation == nil {
-			_ = s.webhookRepo.MarkCompleted(ctx, event.ID)
-			processedCount++
-			continue
+		if event.ProviderCheckoutID != nil {
+			confirmation.ProviderCheckoutID = *event.ProviderCheckoutID
+		}
+		if event.ProviderPaymentID != nil {
+			confirmation.ProviderPaymentID = *event.ProviderPaymentID
+		}
+		if event.ReportedAmount != nil {
+			confirmation.ReportedAmountMinor = int64(*event.ReportedAmount)
+		}
+		if event.ReportedCurrency != nil {
+			confirmation.ReportedCurrency = *event.ReportedCurrency
 		}
 
 		cErr := s.processCapture(ctx, event.Provider, confirmation)
 		if cErr == nil {
-			_ = s.webhookRepo.MarkCompleted(ctx, event.ID)
-			processedCount++
-		} else {
-			switch {
-			case errors.Is(cErr, domain.ErrOrderNotFound),
-				errors.Is(cErr, domain.ErrProviderMismatch),
-				errors.Is(cErr, domain.ErrAmountMismatch),
-				errors.Is(cErr, domain.ErrDistinctCaptureAnomaly),
-				errors.Is(cErr, domain.ErrOrderNotPayable):
-				_ = s.webhookRepo.MarkFailed(ctx, event.ID, cErr.Error(), 0, domain.WebhookEventStatusNeedsReview)
-			default:
-				backoff := time.Duration(15*(1<<event.Attempts)) * time.Second
-				if backoff > 15*time.Minute {
-					backoff = 15 * time.Minute
-				}
-				_ = s.webhookRepo.MarkFailed(ctx, event.ID, cErr.Error(), backoff, domain.WebhookEventStatusFailed)
+			if err := s.webhookRepo.MarkCompleted(ctx, event.ID, event.LockedAt); err != nil {
+				return processedCount, err
 			}
+			processedCount++
+			continue
+		}
+
+		status := domain.WebhookEventStatusFailed
+		backoff := time.Duration(15*(1<<min(event.Attempts, 6))) * time.Second
+		if errors.Is(cErr, domain.ErrProviderMismatch) ||
+			errors.Is(cErr, domain.ErrAmountMismatch) ||
+			errors.Is(cErr, domain.ErrDistinctCaptureAnomaly) ||
+			errors.Is(cErr, domain.ErrOrderNotPayable) ||
+			event.Attempts >= event.MaxAttempts {
+			status = domain.WebhookEventStatusNeedsReview
+			backoff = 0
+		}
+		if err := s.webhookRepo.MarkFailed(ctx, event.ID, event.LockedAt, cErr.Error(), backoff, status); err != nil {
+			return processedCount, err
 		}
 	}
 
@@ -760,7 +793,13 @@ func (s *paymentService) InitiateRefund(ctx context.Context, input CreateRefundI
 
 	if s.refundRepo != nil {
 		existing, err := s.refundRepo.GetByIdempotencyKey(ctx, key)
-		if err == nil && existing != nil {
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			if existing.OrderID != input.OrderID {
+				return nil, domain.ErrRefundAlreadyExists
+			}
 			return &OrderRefundResponse{
 				ID:               existing.ID,
 				OrderID:          existing.OrderID,
@@ -790,13 +829,23 @@ func (s *paymentService) InitiateRefund(ctx context.Context, input CreateRefundI
 
 	if s.refundRepo != nil {
 		existingRefunds, rErr := s.refundRepo.GetByOrderID(ctx, order.ID)
-		if rErr == nil {
-			for _, r := range existingRefunds {
-				if r.Status == domain.RefundStatusSucceeded || r.Status == domain.RefundStatusPending || r.Status == domain.RefundStatusRequested {
-					return nil, domain.ErrRefundAlreadyExists
-				}
+		if rErr != nil {
+			return nil, rErr
+		}
+		for _, r := range existingRefunds {
+			if r.Status != domain.RefundStatusFailed {
+				return nil, domain.ErrRefundAlreadyExists
 			}
 		}
+	}
+
+	gateway, err := s.gateways.ByName(payment.Provider)
+	if err != nil {
+		return nil, err
+	}
+	refunder, ok := gateway.(domain.Refunder)
+	if !ok {
+		return nil, fmt.Errorf("provider %s does not support refunds", payment.Provider)
 	}
 
 	refund := &domain.OrderRefund{
@@ -820,6 +869,9 @@ func (s *paymentService) InitiateRefund(ctx context.Context, input CreateRefundI
 			return nil, rErr
 		}
 		if !created {
+			if reserved.OrderID != input.OrderID {
+				return nil, domain.ErrRefundAlreadyExists
+			}
 			return &OrderRefundResponse{
 				ID:               reserved.ID,
 				OrderID:          reserved.OrderID,
@@ -835,15 +887,6 @@ func (s *paymentService) InitiateRefund(ctx context.Context, input CreateRefundI
 		refund = reserved
 	}
 
-	gateway, err := s.gateways.ByName(payment.Provider)
-	if err != nil {
-		return nil, err
-	}
-	refunder, ok := gateway.(domain.Refunder)
-	if !ok {
-		return nil, fmt.Errorf("provider %s does not support refunds", payment.Provider)
-	}
-
 	res, err := refunder.Refund(ctx, domain.RefundRequest{
 		IdempotencyKey:    key,
 		OrderID:           order.ID,
@@ -852,10 +895,13 @@ func (s *paymentService) InitiateRefund(ctx context.Context, input CreateRefundI
 		Currency:          payment.Currency,
 		Reason:            input.Reason,
 	})
-	if err != nil {
-		errStr := err.Error()
+	if err != nil || res == nil || res.ProviderRefundID == "" {
+		if err == nil {
+			err = errors.New("provider returned incomplete refund details")
+		}
+		errStr := "provider refund outcome could not be confirmed"
 		if s.refundRepo != nil {
-			_ = s.refundRepo.UpdateStatus(ctx, refund.ID, domain.RefundStatusFailed, nil, &errStr)
+			_ = s.refundRepo.UpdateStatus(ctx, refund.ID, domain.RefundStatusNeedsReview, nil, &errStr)
 		}
 		return nil, fmt.Errorf("%w: %v", domain.ErrRefundProviderFailed, err)
 	}
@@ -875,7 +921,10 @@ func (s *paymentService) InitiateRefund(ctx context.Context, input CreateRefundI
 				return err
 			}
 			lic, lErr := tx.LicenseRepo().GetByOrderID(ctx, order.ID)
-			if lErr == nil && lic != nil {
+			if lErr != nil {
+				return lErr
+			}
+			if lic != nil {
 				if err := tx.LicenseRepo().Revoke(ctx, lic.ID, "Full refund issued by admin: "+input.Reason); err != nil {
 					return err
 				}
@@ -930,10 +979,13 @@ func (s *paymentService) GetOrder(ctx context.Context, orderID, requesterID uuid
 	}
 	if order.UserID == requesterID {
 		order.FillClientFields()
+		order.CheckoutURL = nil
 		return order, nil
 	}
 	if spec, specErr := s.specFinder.FindByIDIncludingDeleted(ctx, order.SpecID); specErr == nil && spec != nil && spec.ProducerID == requesterID {
-		order.FillClientFields()
+		order.CheckoutURL = nil
+		order.ProviderCheckoutID = nil
+		order.RazorpayOrderID = nil
 		return order, nil
 	}
 	return nil, errors.New("order not found")
@@ -951,6 +1003,7 @@ func (s *paymentService) GetUserOrders(ctx context.Context, userID uuid.UUID, pa
 	}
 	for i := range orders {
 		orders[i].FillClientFields()
+		orders[i].CheckoutURL = nil
 	}
 	return orders, nil
 }

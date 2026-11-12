@@ -83,13 +83,13 @@ type CreateRefundInput struct {
 }
 
 type OrderRefundResponse struct {
-	ID                uuid.UUID `json:"id"`
-	OrderID           uuid.UUID `json:"order_id"`
-	PaymentID         uuid.UUID `json:"payment_id"`
-	Amount            int       `json:"amount"`
-	Currency          string    `json:"currency"`
-	Status            string    `json:"status"`
-	Reason            string    `json:"reason"`
-	ProviderRefundID  *string   `json:"provider_refund_id,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID               uuid.UUID `json:"id"`
+	OrderID          uuid.UUID `json:"order_id"`
+	PaymentID        uuid.UUID `json:"payment_id"`
+	Amount           int       `json:"amount"`
+	Currency         string    `json:"currency"`
+	Status           string    `json:"status"`
+	Reason           string    `json:"reason"`
+	ProviderRefundID *string   `json:"provider_refund_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }

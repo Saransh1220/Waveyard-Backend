@@ -26,6 +26,7 @@ import (
 	"github.com/saransh1220/blueprint-audio/internal/modules/legal"
 	"github.com/saransh1220/blueprint-audio/internal/modules/notification"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment"
+	paymentApplication "github.com/saransh1220/blueprint-audio/internal/modules/payment/application"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment/infrastructure/dodo"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment/infrastructure/razorpay"
 	"github.com/saransh1220/blueprint-audio/internal/modules/user"
@@ -199,6 +200,7 @@ func main() {
 	// 8. Start Embedded Worker (if enabled)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
+	go paymentApplication.StartWebhookWorker(workerCtx, paymentModule.Service(), paymentApplication.WebhookWorkerConfig{})
 
 	if cfg.Worker.Enabled {
 		uploadRepo := catalogPersistence.NewSpecUploadRepository(db)

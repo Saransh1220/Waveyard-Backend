@@ -67,7 +67,6 @@ func (m *orderRepoMock) MarkRefunded(ctx context.Context, id uuid.UUID) error {
 	return args.Error(0)
 }
 
-
 type paymentRepoMock struct{ mock.Mock }
 
 func (m *paymentRepoMock) Create(ctx context.Context, payment *domain.Payment) error {
@@ -99,7 +98,6 @@ func (m *paymentRepoMock) UpdateStatus(ctx context.Context, id uuid.UUID, status
 	args := m.Called(ctx, id, status)
 	return args.Error(0)
 }
-
 
 type licenseRepoMock struct{ mock.Mock }
 

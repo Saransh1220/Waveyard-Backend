@@ -27,12 +27,15 @@ func TestPaymentService_GetOrder_Ownership(t *testing.T) {
 	t.Run("producer of the ordered spec can read it", func(t *testing.T) {
 		s, or, _, _, sf, _, _, _ := newPaymentSvc()
 		order := pendingOrder(nil)
+		checkoutURL := "https://checkout.example.test/buyer-session"
+		order.CheckoutURL = &checkoutURL
 		producerID := uuid.New()
 		or.On("GetByID", ctx, order.ID).Return(order, nil).Once()
 		sf.On("FindByIDIncludingDeleted", ctx, order.SpecID).Return(&catalogDomain.Spec{ID: order.SpecID, ProducerID: producerID}, nil).Once()
 		got, err := s.GetOrder(ctx, order.ID, producerID)
 		require.NoError(t, err)
 		assert.Same(t, order, got)
+		assert.Nil(t, got.CheckoutURL)
 	})
 
 	t.Run("stranger gets not found", func(t *testing.T) {

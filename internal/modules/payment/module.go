@@ -91,7 +91,9 @@ func (m *Module) Service() application.PaymentService {
 }
 
 func (m *Module) SetSnapshotter(snapshotter domain.ReportingRateSnapshotter) {
-	if s, ok := m.service.(interface{ SetReportingRateSnapshotter(domain.ReportingRateSnapshotter) }); ok {
+	if s, ok := m.service.(interface {
+		SetReportingRateSnapshotter(domain.ReportingRateSnapshotter)
+	}); ok {
 		s.SetReportingRateSnapshotter(snapshotter)
 	}
 }

@@ -146,7 +146,7 @@ func (r *PgIdempotencyRepository) Claim(ctx context.Context, id uuid.UUID, curre
 			attempt_generation = attempt_generation + 1,
 			lease_expires_at = NOW() + INTERVAL '%d seconds',
 			updated_at = NOW()
-		WHERE id = $1 AND attempt_generation = $2
+		WHERE id = $1 AND attempt_generation = $2 AND checkout_state = 'reserved'
 		RETURNING attempt_generation
 	`, domain.CheckoutStateClaiming, leaseSeconds)
 
@@ -168,9 +168,16 @@ func (r *PgIdempotencyRepository) AttachCheckoutResult(ctx context.Context, id u
 			checkout_url = $3,
 			checkout_state = $4,
 			updated_at = NOW()
-		WHERE id = $1 AND attempt_generation = $5
+		WHERE id = $1 AND attempt_generation = $5 AND checkout_state = 'claiming'
 	`
-	_, err := r.db.ExecContext(ctx, query, id, providerCheckoutID, checkoutURL, state, gen)
+	result, err := r.db.ExecContext(ctx, query, id, providerCheckoutID, checkoutURL, state, gen)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err == nil && rows == 0 {
+		return domain.ErrOrderReservedInFlight
+	}
 	return err
 }
 

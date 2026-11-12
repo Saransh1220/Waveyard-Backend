@@ -182,8 +182,8 @@ type PaymentWebhookEvent struct {
 	ProviderPaymentID  *string           `json:"provider_payment_id,omitempty" db:"provider_payment_id"`
 	ReportedAmount     *int              `json:"reported_amount,omitempty" db:"reported_amount"`
 	ReportedCurrency   *string           `json:"reported_currency,omitempty" db:"reported_currency"`
-	Payload            []byte            `json:"payload" db:"payload"`
-	Headers            map[string]string `json:"headers,omitempty" db:"headers"`
+	Payload            []byte            `json:"-" db:"payload"`
+	Headers            map[string]string `json:"-" db:"headers"`
 	Status             string            `json:"status" db:"status"`
 	Attempts           int               `json:"attempts" db:"attempts"`
 	MaxAttempts        int               `json:"max_attempts" db:"max_attempts"`
@@ -204,23 +204,23 @@ type WebhookEventFilter struct {
 
 // OrderRefund records an admin full refund operation
 type OrderRefund struct {
-	ID                uuid.UUID  `json:"id" db:"id"`
-	OrderID           uuid.UUID  `json:"order_id" db:"order_id"`
-	PaymentID         uuid.UUID  `json:"payment_id" db:"payment_id"`
-	UserID            uuid.UUID  `json:"user_id" db:"user_id"`
-	AdminID           uuid.UUID  `json:"admin_id" db:"admin_id"`
-	IdempotencyKey    string     `json:"idempotency_key" db:"idempotency_key"`
-	Amount            int        `json:"amount" db:"amount"`
-	Currency          string     `json:"currency" db:"currency"`
-	Provider          string     `json:"provider" db:"provider"`
-	ProviderRefundID  *string    `json:"provider_refund_id,omitempty" db:"provider_refund_id"`
-	ProviderPaymentID string     `json:"provider_payment_id" db:"provider_payment_id"`
-	Reason            string     `json:"reason" db:"reason"`
-	Notes             *string    `json:"notes,omitempty" db:"notes"`
-	Status            string     `json:"status" db:"status"`
-	FailureReason     *string    `json:"failure_reason,omitempty" db:"failure_reason"`
-	CreatedAt         time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at" db:"updated_at"`
+	ID                uuid.UUID `json:"id" db:"id"`
+	OrderID           uuid.UUID `json:"order_id" db:"order_id"`
+	PaymentID         uuid.UUID `json:"payment_id" db:"payment_id"`
+	UserID            uuid.UUID `json:"user_id" db:"user_id"`
+	AdminID           uuid.UUID `json:"admin_id" db:"admin_id"`
+	IdempotencyKey    string    `json:"-" db:"idempotency_key"`
+	Amount            int       `json:"amount" db:"amount"`
+	Currency          string    `json:"currency" db:"currency"`
+	Provider          string    `json:"provider" db:"provider"`
+	ProviderRefundID  *string   `json:"provider_refund_id,omitempty" db:"provider_refund_id"`
+	ProviderPaymentID string    `json:"provider_payment_id" db:"provider_payment_id"`
+	Reason            string    `json:"reason" db:"reason"`
+	Notes             *string   `json:"notes,omitempty" db:"notes"`
+	Status            string    `json:"status" db:"status"`
+	FailureReason     *string   `json:"failure_reason,omitempty" db:"failure_reason"`
+	CreatedAt         time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // Repositories
@@ -266,8 +266,8 @@ type WebhookEventRepository interface {
 	InsertEvent(ctx context.Context, event *PaymentWebhookEvent) (existing *PaymentWebhookEvent, inserted bool, err error)
 	GetByID(ctx context.Context, id uuid.UUID) (*PaymentWebhookEvent, error)
 	ClaimNextBatch(ctx context.Context, workerID string, batchSize int, leaseDuration time.Duration) ([]PaymentWebhookEvent, error)
-	MarkCompleted(ctx context.Context, id uuid.UUID) error
-	MarkFailed(ctx context.Context, id uuid.UUID, lastErr string, retryAfter time.Duration, status string) error
+	MarkCompleted(ctx context.Context, id uuid.UUID, lockedAt *time.Time) error
+	MarkFailed(ctx context.Context, id uuid.UUID, lockedAt *time.Time, lastErr string, retryAfter time.Duration, status string) error
 	ListEvents(ctx context.Context, filter WebhookEventFilter, limit, offset int) ([]PaymentWebhookEvent, int, error)
 	Requeue(ctx context.Context, id uuid.UUID) error
 }

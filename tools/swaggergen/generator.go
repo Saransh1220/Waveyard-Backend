@@ -212,6 +212,13 @@ func BuildOpenAPIDoc(endpoints []EndpointDef, reflector *Reflector, sourceSpec *
 			})
 		}
 
+		for _, h := range ep.HeaderParams {
+			op.Parameters = append(op.Parameters, Parameter{
+				Name: h.Name, In: "header", Required: h.Required,
+				Description: h.Description, Schema: &Property{Type: h.Type},
+			})
+		}
+
 		// Request Body
 		if ep.RequestBody != nil {
 			cType := ep.ContentType
@@ -273,6 +280,10 @@ func BuildOpenAPIDoc(endpoints []EndpointDef, reflector *Reflector, sourceSpec *
 			op.Responses["403"] = Response{Ref: "#/components/responses/Forbidden"}
 		}
 		op.Responses["500"] = Response{Ref: "#/components/responses/InternalError"}
+
+		for code, response := range ep.Responses {
+			op.Responses[code] = response
+		}
 
 		methodLower := strings.ToLower(ep.Method)
 		pathItem[methodLower] = op

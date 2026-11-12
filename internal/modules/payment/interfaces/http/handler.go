@@ -89,6 +89,29 @@ func (h *PaymentHandler) DodoWebhook(w http.ResponseWriter, r *http.Request) {
 	h.ProviderWebhook(w, r)
 }
 
+func readIdempotencyKey(r *http.Request, fallback string) (string, bool) {
+	values := r.Header.Values("Idempotency-Key")
+	if len(values) > 1 {
+		return "", false
+	}
+	key := strings.TrimSpace(fallback)
+	if len(values) == 1 {
+		key = strings.TrimSpace(values[0])
+		if key == "" {
+			return "", false
+		}
+	}
+	if len(key) > 128 {
+		return "", false
+	}
+	for _, char := range key {
+		if char < '!' || char > '~' || char == ',' {
+			return "", false
+		}
+	}
+	return key, true
+}
+
 func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(middleware.ContextKeyUserId).(uuid.UUID)
 	if !ok {
@@ -137,9 +160,10 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		expectedPriceID = &parsedPriceID
 	}
 
-	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if idempotencyKey == "" {
-		idempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	idempotencyKey, valid := readIdempotencyKey(r, req.IdempotencyKey)
+	if !valid {
+		http.Error(w, "invalid Idempotency-Key", http.StatusBadRequest)
+		return
 	}
 
 	input := application.CreateOrderInput{
@@ -207,7 +231,7 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		traceID := middleware.GetRequestID(r.Context())
 		log.Printf("[ALERT][PAYMENT_ORDER_ERROR] trace_id=%s user_id=%s error=%v", traceID, userID, err)
-		http.Error(w, "failed to create order: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to create order", http.StatusInternalServerError)
 		return
 	}
 	// Return order
@@ -262,7 +286,7 @@ func (h *PaymentHandler) VerifyPayment(w http.ResponseWriter, r *http.Request) {
 
 		traceID := middleware.GetRequestID(r.Context())
 		log.Printf("[ALERT][PAYMENT_FAILURE] trace_id=%s order_id=%s user_id=%s error=%v", traceID, orderID, userID, err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "payment verification failed", http.StatusBadRequest)
 		return
 	}
 
@@ -291,7 +315,11 @@ func (h *PaymentHandler) CreateRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	idempotencyKey, valid := readIdempotencyKey(r, "")
+	if !valid {
+		http.Error(w, "invalid Idempotency-Key", http.StatusBadRequest)
+		return
+	}
 
 	var body struct {
 		Reason string `json:"reason"`
@@ -338,7 +366,7 @@ func (h *PaymentHandler) CreateRefund(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, domain.ErrRefundProviderFailed):
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]string{"code": "PROVIDER_REFUND_FAILED", "message": "payment provider rejected refund"})
+			json.NewEncoder(w).Encode(map[string]string{"code": "PROVIDER_REFUND_FAILED", "message": "refund outcome needs review"})
 			return
 		default:
 			log.Printf("[ALERT][REFUND_ERROR] order_id=%s admin_id=%s error=%v", orderID, adminID, err)

@@ -129,6 +129,7 @@ func TestPaymentService_CreateOrderWithOffer_IdempotencyBranches(t *testing.T) {
 			RequestHash:    reqHash,
 			OrderID:        &existingOID,
 			CheckoutURL:    &url,
+			CheckoutState:  domain.CheckoutStateReady,
 		}, nil).Once()
 
 		or.On("GetByID", ctx, existingOID).Return(&domain.Order{
@@ -158,6 +159,7 @@ func TestPaymentService_CreateOrderWithOffer_IdempotencyBranches(t *testing.T) {
 			RequestHash:    reqHash,
 			OrderID:        &existingOID,
 			CheckoutURL:    &url,
+			CheckoutState:  domain.CheckoutStateReady,
 		}, nil).Once()
 
 		or.On("GetByID", ctx, existingOID).Return(&domain.Order{
@@ -355,7 +357,6 @@ func TestPaymentService_RefundAndWebhookBranches(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
-
 
 func TestStartWebhookWorker_Defaults(t *testing.T) {
 	s, _, _, _, _, _, _, _ := newPaymentSvc()

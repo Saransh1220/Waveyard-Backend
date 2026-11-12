@@ -3,13 +3,13 @@ package main
 // OpenAPI Doc structure definitions for YAML serialization
 
 type OpenAPIDoc struct {
-	OpenAPI    string                 `yaml:"openapi"`
-	Info       Info                   `yaml:"info"`
-	Servers    []Server               `yaml:"servers"`
-	Security   []map[string][]string  `yaml:"security"`
-	Tags       []Tag                  `yaml:"tags"`
-	Paths      map[string]PathItem    `yaml:"paths"`
-	Components Components             `yaml:"components"`
+	OpenAPI    string                `yaml:"openapi"`
+	Info       Info                  `yaml:"info"`
+	Servers    []Server              `yaml:"servers"`
+	Security   []map[string][]string `yaml:"security"`
+	Tags       []Tag                 `yaml:"tags"`
+	Paths      map[string]PathItem   `yaml:"paths"`
+	Components Components            `yaml:"components"`
 }
 
 type Info struct {
@@ -36,14 +36,14 @@ type Tag struct {
 type PathItem map[string]*Operation
 
 type Operation struct {
-	Tags        []string               `yaml:"tags"`
-	OperationID string                 `yaml:"operationId"`
-	Summary     string                 `yaml:"summary"`
-	Description string                 `yaml:"description,omitempty"`
-	Security    []map[string][]string  `yaml:"security,omitempty"`
-	Parameters  []Parameter            `yaml:"parameters,omitempty"`
-	RequestBody *RequestBody           `yaml:"requestBody,omitempty"`
-	Responses   map[string]Response    `yaml:"responses"`
+	Tags        []string              `yaml:"tags"`
+	OperationID string                `yaml:"operationId"`
+	Summary     string                `yaml:"summary"`
+	Description string                `yaml:"description,omitempty"`
+	Security    []map[string][]string `yaml:"security,omitempty"`
+	Parameters  []Parameter           `yaml:"parameters,omitempty"`
+	RequestBody *RequestBody          `yaml:"requestBody,omitempty"`
+	Responses   map[string]Response   `yaml:"responses"`
 }
 
 type Parameter struct {
@@ -103,6 +103,7 @@ type EndpointDef struct {
 	Auth         string // "none", "bearer", "cookie", "both", "flexible"
 	PathParams   []ParamDef
 	QueryParams  []ParamDef
+	HeaderParams []ParamDef
 	RequestBody  any    // sample instance or nil
 	ContentType  string // "application/json" (default), "multipart/form-data"
 	SuccessCode  int    // e.g. 200, 201, 204
