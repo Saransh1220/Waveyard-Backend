@@ -16,6 +16,17 @@ type refundRepoMock struct {
 	mock.Mock
 }
 
+func (m *refundRepoMock) LockPayment(context.Context, uuid.UUID) error { return nil }
+
+func (m *refundRepoMock) HasProviderRefund(context.Context, uuid.UUID) (bool, error) {
+	return false, nil
+}
+
+func (m *refundRepoMock) RecordProviderRefund(ctx context.Context, paymentID uuid.UUID, provider string, refund domain.RefundConfirmation) (int, error) {
+	args := m.Called(ctx, paymentID, provider, refund)
+	return args.Int(0), args.Error(1)
+}
+
 func (m *refundRepoMock) ReserveRefund(ctx context.Context, refund *domain.OrderRefund) (*domain.OrderRefund, bool, error) {
 	args := m.Called(ctx, refund)
 	if args.Get(0) == nil {

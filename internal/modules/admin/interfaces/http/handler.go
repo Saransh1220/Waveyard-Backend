@@ -314,7 +314,9 @@ func (h *AdminHandler) ListOrders(w http.ResponseWriter, r *http.Request) {
 	const from = ` FROM orders o JOIN users u ON o.user_id = u.id JOIN specs s ON o.spec_id = s.id`
 
 	rows := []map[string]any{}
-	query := `SELECT o.id, o.user_id, u.email AS buyer_email, o.spec_id, s.title AS spec_title, o.license_type, o.amount, o.currency, o.status, o.created_at` +
+	query := `SELECT o.id, o.user_id, u.email AS buyer_email, o.spec_id, s.title AS spec_title, o.license_type, o.amount, o.currency, o.status, o.created_at, o.provider,
+		(SELECT p.amount FROM payments p WHERE p.order_id = o.id AND p.status IN ('captured', 'refunded')
+		 ORDER BY p.created_at, p.id LIMIT 1) AS captured_amount` +
 		from + where + ` ORDER BY o.created_at DESC, o.id` + pageClause(len(args))
 	if err := h.selectMaps(r.Context(), &rows, query, append(args, limit, offset)...); err != nil {
 		http.Error(w, `{"error":"failed to list orders"}`, http.StatusInternalServerError)

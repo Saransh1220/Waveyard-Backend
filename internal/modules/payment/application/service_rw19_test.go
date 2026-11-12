@@ -20,6 +20,12 @@ type idempotencyRepoMock struct {
 	mock.Mock
 }
 
+func (m *idempotencyRepoMock) GetByOrderID(ctx context.Context, orderID uuid.UUID) (*domain.OrderIdempotencyKey, error) {
+	args := m.Called(ctx, orderID)
+	key, _ := args.Get(0).(*domain.OrderIdempotencyKey)
+	return key, args.Error(1)
+}
+
 func (m *idempotencyRepoMock) ReserveKey(ctx context.Context, k *domain.OrderIdempotencyKey) (*domain.OrderIdempotencyKey, bool, error) {
 	args := m.Called(ctx, k)
 	if args.Get(0) == nil {

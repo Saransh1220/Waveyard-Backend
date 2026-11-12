@@ -20,7 +20,8 @@ func TestGateway_Refund(t *testing.T) {
 			assert.Equal(t, "/v1/payments/pay_123/refund", r.URL.Path)
 			assert.Equal(t, "idemp-key-1", r.Header.Get("X-Refund-Idempotency"))
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":     "rfnd_rzp_1",
+				"id":         "rfnd_rzp_1",
+				"payment_id": "pay_123", "amount": 1000, "currency": "INR",
 				"status": "processed",
 			})
 		})
@@ -41,7 +42,8 @@ func TestGateway_Refund(t *testing.T) {
 	t.Run("successful refund pending default status", func(t *testing.T) {
 		g := newTestGateway(t, func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":     "rfnd_rzp_2",
+				"id":         "rfnd_rzp_2",
+				"payment_id": "pay_123", "amount": 1000, "currency": "INR",
 				"status": "",
 			})
 		})
@@ -50,6 +52,7 @@ func TestGateway_Refund(t *testing.T) {
 			OrderID:           oid,
 			ProviderPaymentID: "pay_123",
 			AmountMinor:       1000,
+			Currency:          "INR",
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "rfnd_rzp_2", res.ProviderRefundID)
@@ -68,4 +71,22 @@ func TestGateway_Refund(t *testing.T) {
 		})
 		require.Error(t, err)
 	})
+}
+
+func TestGatewayFindCheckoutUsesMatchingReceipt(t *testing.T) {
+	order := &domain.Order{ID: uuid.New(), Amount: 1000, Currency: "INR"}
+	g := newTestGateway(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/v1/orders", r.URL.Path)
+		assert.Equal(t, formatReceipt(order.ID), r.URL.Query().Get("receipt"))
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{
+			{"id": "order_other", "receipt": "other", "status": "created", "amount": 1000, "currency": "INR"},
+			{"id": "order_recovered", "receipt": formatReceipt(order.ID), "status": "created", "amount": 1000, "currency": "INR"},
+		}})
+	})
+	session, capture, err := g.FindCheckout(context.Background(), order)
+	require.NoError(t, err)
+	require.Nil(t, capture)
+	require.NotNil(t, session)
+	assert.Equal(t, "order_recovered", session.ProviderRef)
 }

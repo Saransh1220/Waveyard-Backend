@@ -252,6 +252,45 @@ paths:
         "500":
           description: ""
           $ref: '#/components/responses/InternalError'
+  /admin/orders/{id}/reconcile-checkout:
+    post:
+      tags:
+        - Admin
+      operationId: adminReconcileCheckout
+      summary: Reconcile an existing checkout using provider reads
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: provider_reference
+          in: query
+          description: Verified Razorpay order ID or Dodo payment ID from the provider dashboard
+          schema:
+            type: string
+      responses:
+        "202":
+          description: Checkout outcome is still unresolved
+        "204":
+          description: No content
+        "400":
+          description: ""
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          description: ""
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: ""
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          description: Order not found
+        "500":
+          description: ""
+          $ref: '#/components/responses/InternalError'
   /admin/orders/{id}/refunds:
     get:
       tags:

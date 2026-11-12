@@ -125,6 +125,57 @@ func TestPaymentOperationConcurrency(t *testing.T) {
 		require.ErrorIs(t, errs[0], domain.ErrRefundAlreadyExists)
 		require.NoError(t, errs[1])
 	}
+
+	// External partial refunds only revoke access once the captured total is returned.
+	_, err = db.ExecContext(ctx, `INSERT INTO license_options(id,spec_id,license_type,name,price,features,file_types)
+		VALUES($1,$2,'Basic','Basic',10,'{}','{}')`, licenseID, specID)
+	require.NoError(t, err)
+	licenses := pg.NewLicenseRepository(db)
+	issued, err := service.issueLicenseWithRepo(ctx, order, licenses)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := db.Exec(`DELETE FROM licenses WHERE id = $1`, issued.ID)
+		require.NoError(t, err)
+	})
+	_, err = db.ExecContext(ctx, `UPDATE payments SET status='captured', currency='INR' WHERE id=$1`, paymentID)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE orders SET status='paid' WHERE id=$1`, order.ID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := db.Exec(`DELETE FROM payment_provider_refunds WHERE payment_id = $1`, paymentID)
+		require.NoError(t, err)
+		_, err = db.Exec(`DELETE FROM payment_webhook_events WHERE provider_payment_id = $1`, paymentID.String())
+		require.NoError(t, err)
+	})
+	service.refundRepo = refunds
+	service.webhookRepo = pg.NewWebhookRepository(db)
+	first := domain.RefundConfirmation{
+		ProviderRefundID: uuid.NewString(), Amount: 400, Currency: "INR", Status: domain.RefundStatusSucceeded,
+	}
+	require.NoError(t, service.reconcileRefund(ctx, domain.ProviderRazorpay, paymentID.String(), first))
+	require.NoError(t, service.reconcileRefund(ctx, domain.ProviderRazorpay, paymentID.String(), first))
+	licenseBefore, err := licenses.GetByID(ctx, issued.ID)
+	require.NoError(t, err)
+	require.False(t, licenseBefore.IsRevoked)
+	hasRefund, err := refunds.HasProviderRefund(ctx, paymentID)
+	require.NoError(t, err)
+	require.True(t, hasRefund)
+
+	second := domain.RefundConfirmation{
+		ProviderRefundID: uuid.NewString(), Amount: 600, Currency: "INR", Status: domain.RefundStatusSucceeded,
+	}
+	require.NoError(t, service.enqueueRefund(ctx, domain.ProviderRazorpay, &domain.PaymentConfirmation{
+		ProviderPaymentID: paymentID.String(), Refund: &second,
+	}, []byte("{}")))
+	processed, err := service.ProcessNextWebhookBatch(ctx, "test-refund", 1, time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+	refunded, err := service.orderRepo.GetByID(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.OrderStatusRefunded, refunded.Status)
+	licenseAfter, err := licenses.GetByID(ctx, issued.ID)
+	require.NoError(t, err)
+	require.True(t, licenseAfter.IsRevoked)
 }
 
 func TestWebhookLeaseRecovery(t *testing.T) {

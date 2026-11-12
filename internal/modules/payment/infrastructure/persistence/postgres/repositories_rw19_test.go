@@ -482,7 +482,7 @@ func TestPgRefundRepository(t *testing.T) {
 	})
 
 	t.Run("UpdateStatus", func(t *testing.T) {
-		mock.ExpectExec(`UPDATE order_refunds SET status = \$2`).
+		mock.ExpectExec(`UPDATE order_refunds SET status = CASE`).
 			WithArgs(id, "succeeded", &pRefID, &failReason).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 

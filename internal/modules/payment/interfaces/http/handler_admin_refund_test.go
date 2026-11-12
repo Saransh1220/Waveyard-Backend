@@ -415,3 +415,7 @@ func TestPaymentHandler_OrderAndWebhookIdempotencyBranches(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, w500.Code)
 	})
 }
+
+func (m refundMockService) ReconcileOrderCheckout(context.Context, uuid.UUID, string) error {
+	return nil
+}

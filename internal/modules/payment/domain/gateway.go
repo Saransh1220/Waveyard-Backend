@@ -20,6 +20,16 @@ type Gateway interface {
 	CreateCheckout(ctx context.Context, req CheckoutRequest) (CheckoutSession, error)
 }
 
+// CheckoutFinder recovers an existing checkout or capture using provider reads.
+type CheckoutFinder interface {
+	FindCheckout(ctx context.Context, order *Order) (*CheckoutSession, *PaymentConfirmation, error)
+}
+
+// CheckoutReferenceFinder verifies an operator-supplied provider reference.
+type CheckoutReferenceFinder interface {
+	FindCheckoutByReference(ctx context.Context, order *Order, reference string) (*CheckoutSession, *PaymentConfirmation, error)
+}
+
 type CheckoutRequest struct {
 	Order       *Order
 	SpecTitle   string
@@ -40,11 +50,23 @@ type PaymentConfirmation struct {
 	ProviderCheckoutID  string
 	ProviderPaymentID   string
 	ReportedAmountMinor int64
+	ReportedTaxMinor    int64
 	ReportedCurrency    string
 	Signature           string
 	Method              *string
 	Email               *string
 	EventID             string
+	Refund              *RefundConfirmation
+}
+
+// RefundConfirmation contains facts from an authenticated provider response.
+type RefundConfirmation struct {
+	ProviderRefundID string
+	Amount           int
+	Currency         string
+	Full             bool
+	Status           string
+	IntentKey        string
 }
 
 // ClientConfirmer is implemented by gateways where the browser reports the

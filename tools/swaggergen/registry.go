@@ -918,6 +918,21 @@ func GetEndpointsRegistry() []EndpointDef {
 		},
 		{
 			Method:      "POST",
+			Path:        "/admin/orders/{id}/reconcile-checkout",
+			Tags:        []string{"Admin"},
+			OperationID: "adminReconcileCheckout",
+			QueryParams: []ParamDef{{Name: "provider_reference", Type: "string", Description: "Verified Razorpay order ID or Dodo payment ID from the provider dashboard"}},
+			Summary:     "Reconcile an existing checkout using provider reads",
+			Auth:        "bearer",
+			PathParams:  []ParamDef{{Name: "id", Type: "string", Format: "uuid", Required: true}},
+			SuccessCode: 204,
+			Responses: map[string]Response{
+				"202": {Description: "Checkout outcome is still unresolved"},
+				"404": {Description: "Order not found"},
+			},
+		},
+		{
+			Method:      "POST",
 			Path:        "/admin/orders/{id}/refunds",
 			Tags:        []string{"Admin"},
 			OperationID: "adminCreateOrderRefund",

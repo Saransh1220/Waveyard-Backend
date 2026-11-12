@@ -97,9 +97,14 @@ func (g *Gateway) CreateCheckout(ctx context.Context, req domain.CheckoutRequest
 			"quantity":   1,
 			"amount":     order.Amount,
 		}},
-		"return_url":  returnURL,
-		"metadata":    metadata,
-		"custom_data": metadata,
+		"return_url":       returnURL,
+		"metadata":         metadata,
+		"billing_currency": order.Currency,
+		"feature_flags": map[string]bool{
+			"allow_currency_selection": false,
+			"allow_discount_code":      false,
+			"allow_editing_addons":     false,
+		},
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -146,7 +151,6 @@ func (g *Gateway) Refund(ctx context.Context, req domain.RefundRequest) (*domain
 
 	body := map[string]any{
 		"payment_id": req.ProviderPaymentID,
-		"amount":     req.AmountMinor,
 		"reason":     req.Reason,
 		"metadata": map[string]any{
 			"order_id":        req.OrderID.String(),
@@ -177,16 +181,23 @@ func (g *Gateway) Refund(ctx context.Context, req domain.RefundRequest) (*domain
 	}
 
 	var decoded struct {
-		RefundID string `json:"refund_id"`
-		Status   string `json:"status"`
+		RefundID  string `json:"refund_id"`
+		PaymentID string `json:"payment_id"`
+		Partial   *bool  `json:"is_partial"`
+		Status    string `json:"status"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
 		return nil, err
 	}
 
+	if decoded.PaymentID != req.ProviderPaymentID || decoded.Partial == nil || *decoded.Partial {
+		return nil, errors.New("dodo returned an unverified full refund")
+	}
 	status := strings.ToLower(strings.TrimSpace(decoded.Status))
 	if status == "succeeded" {
 		status = domain.RefundStatusSucceeded
+	} else if status == "review" {
+		status = domain.RefundStatusNeedsReview
 	} else if status == "" {
 		status = domain.RefundStatusPending
 	}
@@ -209,6 +220,25 @@ func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*doma
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return nil, domain.ErrMalformedPayload
 	}
+	if event.Type == "refund.succeeded" || event.Type == "refund.failed" {
+		refundID := stringFromAny(event.Data["refund_id"])
+		paymentID := stringFromAny(event.Data["payment_id"])
+		partial, hasPartial := event.Data["is_partial"].(bool)
+		amount := extractAmountMinor(event.Data)
+		if refundID == "" || paymentID == "" || !hasPartial || amount < 0 || amount > 1<<31-1 ||
+			(partial && (amount == 0 || extractCurrency(event.Data) == "")) {
+			return nil, domain.ErrMalformedPayload
+		}
+		metadata, _ := event.Data["metadata"].(map[string]any)
+		return &domain.PaymentConfirmation{
+			EventID: headers["webhook-id"], ProviderPaymentID: paymentID,
+			Refund: &domain.RefundConfirmation{
+				ProviderRefundID: refundID, Amount: int(amount), Currency: extractCurrency(event.Data),
+				Full: !partial, Status: strings.TrimPrefix(event.Type, "refund."),
+				IntentKey: stringFromAny(metadata["idempotency_key"]),
+			},
+		}, nil
+	}
 	if event.Type != "payment.succeeded" {
 		return nil, nil
 	}
@@ -222,12 +252,15 @@ func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*doma
 	}
 
 	amountMinor := extractAmountMinor(event.Data)
+	taxMinor, _ := event.Data["tax"].(float64)
 	currency := extractCurrency(event.Data)
 
 	return &domain.PaymentConfirmation{
 		OrderID:             orderID,
+		ProviderCheckoutID:  stringFromAny(event.Data["checkout_session_id"]),
 		ProviderPaymentID:   paymentID,
 		ReportedAmountMinor: amountMinor,
+		ReportedTaxMinor:    int64(taxMinor),
 		ReportedCurrency:    currency,
 		Signature:           headers["webhook-signature"],
 		EventID:             headers["webhook-id"],

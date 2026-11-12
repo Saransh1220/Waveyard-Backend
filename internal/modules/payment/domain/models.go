@@ -255,6 +255,7 @@ type LicenseRepository interface {
 }
 
 type IdempotencyRepository interface {
+	GetByOrderID(ctx context.Context, orderID uuid.UUID) (*OrderIdempotencyKey, error)
 	ReserveKey(ctx context.Context, key *OrderIdempotencyKey) (existing *OrderIdempotencyKey, created bool, err error)
 	GetByUserAndKey(ctx context.Context, userID uuid.UUID, key string) (*OrderIdempotencyKey, error)
 	Claim(ctx context.Context, id uuid.UUID, currentGen int, leaseDuration time.Duration) (bool, int, error)
@@ -273,6 +274,9 @@ type WebhookEventRepository interface {
 }
 
 type RefundRepository interface {
+	LockPayment(ctx context.Context, paymentID uuid.UUID) error
+	RecordProviderRefund(ctx context.Context, paymentID uuid.UUID, provider string, refund RefundConfirmation) (int, error)
+	HasProviderRefund(ctx context.Context, paymentID uuid.UUID) (bool, error)
 	ReserveRefund(ctx context.Context, refund *OrderRefund) (existing *OrderRefund, created bool, err error)
 	GetByID(ctx context.Context, id uuid.UUID) (*OrderRefund, error)
 	GetByOrderID(ctx context.Context, orderID uuid.UUID) ([]OrderRefund, error)

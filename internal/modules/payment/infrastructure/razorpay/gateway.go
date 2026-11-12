@@ -136,6 +136,15 @@ func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*doma
 	var event struct {
 		Event   string `json:"event"`
 		Payload struct {
+			Refund struct {
+				Entity struct {
+					ID        string          `json:"id"`
+					PaymentID string          `json:"payment_id"`
+					Amount    int             `json:"amount"`
+					Currency  string          `json:"currency"`
+					Notes     json.RawMessage `json:"notes"`
+				} `json:"entity"`
+			} `json:"refund"`
 			Payment struct {
 				Entity map[string]any `json:"entity"`
 			} `json:"payment"`
@@ -143,6 +152,29 @@ func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*doma
 	}
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return nil, domain.ErrMalformedPayload
+	}
+
+	if event.Event == "refund.created" || event.Event == "refund.processed" || event.Event == "refund.failed" {
+		refund := event.Payload.Refund.Entity
+		if refund.ID == "" || refund.PaymentID == "" || refund.Amount <= 0 || refund.Amount > 1<<31-1 || refund.Currency == "" {
+			return nil, domain.ErrMalformedPayload
+		}
+		status := domain.RefundStatusPending
+		switch event.Event {
+		case "refund.processed":
+			status = domain.RefundStatusSucceeded
+		case "refund.failed":
+			status = domain.RefundStatusFailed
+		}
+		var notes map[string]string
+		_ = json.Unmarshal(refund.Notes, &notes)
+		return &domain.PaymentConfirmation{
+			EventID: getHeader(headers, "x-razorpay-event-id"), ProviderPaymentID: refund.PaymentID,
+			Refund: &domain.RefundConfirmation{
+				ProviderRefundID: refund.ID, Amount: refund.Amount, Currency: refund.Currency,
+				Status: status, IntentKey: notes["idempotency_key"],
+			},
+		}, nil
 	}
 
 	// Canonical event: payment.captured
@@ -209,13 +241,19 @@ func (g *Gateway) Refund(_ context.Context, req domain.RefundRequest) (*domain.R
 	}
 	body := map[string]interface{}{
 		"notes": map[string]interface{}{
-			"order_id": req.OrderID.String(),
-			"reason":   req.Reason,
+			"order_id":        req.OrderID.String(),
+			"reason":          req.Reason,
+			"idempotency_key": req.IdempotencyKey,
 		},
 	}
 	res, err := g.client.Payment.Refund(req.ProviderPaymentID, int(req.AmountMinor), body, extraHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("razorpay refund failed: %w", err)
+	}
+	amount, _ := res["amount"].(float64)
+	if stringFromAny(res["payment_id"]) != req.ProviderPaymentID || amount != float64(req.AmountMinor) ||
+		!strings.EqualFold(stringFromAny(res["currency"]), req.Currency) {
+		return nil, errors.New("razorpay returned an unverified full refund")
 	}
 	refundID := stringFromAny(res["id"])
 	status := strings.ToLower(stringFromAny(res["status"]))

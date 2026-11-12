@@ -221,3 +221,7 @@ func TestPaymentHandler_ErrorBranches(t *testing.T) {
 	h.GetProducerOrders(w, authedReq(http.MethodGet, "/producer/orders", ""))
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+func (m mockPaymentService) ReconcileOrderCheckout(context.Context, uuid.UUID, string) error {
+	return nil
+}

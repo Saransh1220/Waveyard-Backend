@@ -1,6 +1,10 @@
 package domain
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/google/uuid"
+)
 
 var (
 	ErrOrderNotFound              = errors.New("order not found")
@@ -30,3 +34,11 @@ var (
 	ErrRefundProviderFailed   = errors.New("provider rejected refund")
 	ErrDistinctCaptureAnomaly = errors.New("distinct capture reported for already paid order")
 )
+
+type CheckoutPendingError struct {
+	OrderID     uuid.UUID
+	Reconciling bool
+}
+
+func (e *CheckoutPendingError) Error() string { return ErrOrderReservedInFlight.Error() }
+func (e *CheckoutPendingError) Unwrap() error { return ErrOrderReservedInFlight }

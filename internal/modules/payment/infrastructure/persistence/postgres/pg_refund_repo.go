@@ -158,11 +158,14 @@ func (r *PgRefundRepository) GetByProviderRefundID(ctx context.Context, provider
 func (r *PgRefundRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, providerRefundID *string, failureReason *string) error {
 	query := `
 		UPDATE order_refunds
-		SET status = $2,
+		SET status = CASE
+				WHEN status = 'succeeded' THEN status
+				WHEN status = 'failed' AND $2 <> 'succeeded' THEN status
+				ELSE $2 END,
 			provider_refund_id = COALESCE($3, provider_refund_id),
 			failure_reason = COALESCE($4, failure_reason),
 			updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND (provider_refund_id IS NULL OR $3 IS NULL OR provider_refund_id = $3)
 	`
 	_, err := r.db.ExecContext(ctx, query, id, status, providerRefundID, failureReason)
 	return err

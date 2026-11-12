@@ -1,6 +1,6 @@
 # 🎵 Waveyard Studio Backend
 
-[![Go Version](https://img.shields.io/badge/Go-1.25.1-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.27.4-00ADD8?style=flat&logo=go)](https://golang.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791?style=flat&logo=postgresql&logoColor=white)](https://www.postgresql.org)
 [![Redis](https://img.shields.io/badge/Redis-7+-DC382D?style=flat&logo=redis&logoColor=white)](https://redis.io)
 [![Cloudflare R2](https://img.shields.io/badge/Storage-Cloudflare%20R2-F38020?style=flat&logo=cloudflare&logoColor=white)](https://www.cloudflare.com/products/r2/)
@@ -122,7 +122,7 @@ The repository builds and runs **two distinct binaries**:
 
 ## 🛠 Tech Stack
 
-- **Core Runtime**: Go `1.25.1` (Standard Library HTTP routing, `sqlx`, `lib/pq`)
+- **Core Runtime**: Go `1.27.4` (Standard Library HTTP routing, `sqlx`, `lib/pq`)
 - **Primary Database**: PostgreSQL `15+` (Neon Serverless in production, Docker container locally)
 - **Caching & Ephemeral Store**: Redis `7+` (Supports running in no-cache mode via `REDIS_ENABLED=false`)
 - **Object Storage**: Cloudflare R2 (S3-compatible API via AWS SDK for Go v2)
@@ -137,7 +137,7 @@ The repository builds and runs **two distinct binaries**:
 
 Ensure the following tools are installed on your workstation:
 
-1. **Go**: Version `1.25+` ([Download Go](https://go.dev/dl/))
+1. **Go**: Version `1.27.4+` ([Download Go](https://go.dev/dl/))
 2. **Docker & Docker Compose**: ([Get Docker](https://docs.docker.com/get-docker/))
 3. **GNU Make**:
    - **Linux / macOS**: Pre-installed or via `brew install make` / `sudo apt install make`
@@ -621,7 +621,7 @@ When a new commit is pushed to `main` (or you trigger a manual deploy in Render)
 
 1. **Multi-Stage Docker Build**:
    ```dockerfile
-   # Stage 1: Build binaries using Go 1.25 on Alpine
+   # Stage 1: Build binaries using Go 1.27.4 on Alpine
    go build -o /out/server ./cmd/server
    go build -o /out/worker ./cmd/worker
 
@@ -716,6 +716,14 @@ Below is a categorized summary of all HTTP endpoints exposed by the API Gateway:
 - `GET  /licenses` — List acquired user licenses
 - `GET  /licenses/{id}/downloads` — Generate secure time-limited presigned download URLs for WAV/Stems
 - `GET  /orders/producer` — List sales orders for producer dashboard
+
+#### Payment reconciliation and rollout
+
+- Subscribe Razorpay to `payment.captured`, `refund.created`, `refund.processed` and `refund.failed`. Subscribe Dodo to `payment.succeeded`, `refund.succeeded` and `refund.failed`. Configure each signing secret in the environment used by the API.
+- A buyer can retry an unresolved order with its original `Idempotency-Key`. Operators with `admin:orders:refund` can call `POST /admin/orders/{id}/reconcile-checkout` to repeat provider lookups. HTTP 202 means provider evidence is still pending. Check the provider dashboard and pass its Razorpay order ID or Dodo payment ID as `provider_reference` for direct verification. Use webhook replay when an event needs redelivery.
+- Refund reconciliation keeps access active while the provider is processing a refund. A confirmed full refund or confirmed partials that add up to the captured payment update the payment, order and license in one transaction. An external partial refund blocks a new full-refund request.
+- Apply the producer-handle migration `000048` before `000049` if that feature ships in the same rollout. If the payment migrations ship first, give the producer-handle migration the next unused version before merging it. Before applying `000049` to an existing database, check `order_refunds` for multiple rows with `status <> 'failed'` for the same `payment_id` and reconcile any duplicates against the provider.
+
 
 ### 🔔 Notifications & Real-Time (`/notifications/*`, `/ws`)
 - `GET   /ws` — Establish WebSocket connection for real-time push events (Protected)

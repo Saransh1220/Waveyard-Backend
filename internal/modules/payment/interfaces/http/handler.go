@@ -191,13 +191,23 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, domain.ErrOrderReservedInFlight) {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", "2")
+			retry := 2
+			response := map[string]any{
+				"code": "CHECKOUT_IN_FLIGHT", "message": "Checkout creation is in progress",
+			}
+			var pending *domain.CheckoutPendingError
+			if errors.As(err, &pending) {
+				response["order_id"] = pending.OrderID
+				if pending.Reconciling {
+					retry = 30
+					response["code"] = "CHECKOUT_RECONCILING"
+					response["message"] = "Checkout outcome is being verified"
+				}
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			response["retry_after"] = retry
 			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]any{
-				"code":        "CHECKOUT_IN_FLIGHT",
-				"message":     "Checkout creation is in flight, please retry shortly",
-				"retry_after": 2,
-			})
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 		var priceMismatch *application.PriceMismatchError
@@ -655,4 +665,34 @@ func (h *PaymentHandler) GetProducerOrders(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (h *PaymentHandler) ReconcileOrderCheckout(w http.ResponseWriter, r *http.Request) {
+	orderID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid order id", http.StatusBadRequest)
+		return
+	}
+	reference := strings.TrimSpace(r.URL.Query().Get("provider_reference"))
+	if len(reference) > 255 || strings.IndexFunc(reference, func(c rune) bool {
+		return !(c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_')
+	}) >= 0 {
+		http.Error(w, "invalid provider reference", http.StatusBadRequest)
+		return
+	}
+	err = h.service.ReconcileOrderCheckout(r.Context(), orderID, reference)
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, domain.ErrOrderNotFound):
+		http.Error(w, "order not found", http.StatusNotFound)
+	case errors.Is(err, domain.ErrProviderMismatch), errors.Is(err, domain.ErrAmountMismatch):
+		http.Error(w, "provider reference does not match this order", http.StatusConflict)
+	case errors.Is(err, domain.ErrOrderReservedInFlight):
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusAccepted)
+	default:
+		log.Printf("[CHECKOUT_RECONCILIATION] order_id=%s error=%v", orderID, err)
+		http.Error(w, "could not reconcile checkout", http.StatusInternalServerError)
+	}
 }

@@ -98,6 +98,19 @@ func (r *PgIdempotencyRepository) ReserveKey(ctx context.Context, k *domain.Orde
 	return nil, false, err
 }
 
+func (r *PgIdempotencyRepository) GetByOrderID(ctx context.Context, orderID uuid.UUID) (*domain.OrderIdempotencyKey, error) {
+	var userID uuid.UUID
+	var key string
+	err := r.db.QueryRowContext(ctx, `SELECT user_id, idempotency_key FROM order_idempotency_keys WHERE order_id = $1`, orderID).Scan(&userID, &key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r.GetByUserAndKey(ctx, userID, key)
+}
+
 func (r *PgIdempotencyRepository) GetByUserAndKey(ctx context.Context, userID uuid.UUID, key string) (*domain.OrderIdempotencyKey, error) {
 	query := `
 		SELECT id, user_id, idempotency_key, request_hash, order_id,
@@ -168,7 +181,7 @@ func (r *PgIdempotencyRepository) AttachCheckoutResult(ctx context.Context, id u
 			checkout_url = $3,
 			checkout_state = $4,
 			updated_at = NOW()
-		WHERE id = $1 AND attempt_generation = $5 AND checkout_state = 'claiming'
+		WHERE id = $1 AND attempt_generation = $5 AND checkout_state IN ('claiming', 'reconciling')
 	`
 	result, err := r.db.ExecContext(ctx, query, id, providerCheckoutID, checkoutURL, state, gen)
 	if err != nil {
@@ -186,7 +199,7 @@ func (r *PgIdempotencyRepository) MarkFailed(ctx context.Context, id uuid.UUID, 
 		UPDATE order_idempotency_keys
 		SET checkout_state = $2,
 			updated_at = NOW()
-		WHERE id = $1 AND attempt_generation = $3
+		WHERE id = $1 AND attempt_generation = $3 AND checkout_state = 'claiming'
 	`
 	_, err := r.db.ExecContext(ctx, query, id, state, gen)
 	return err
