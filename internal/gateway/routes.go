@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"crypto/subtle"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -23,6 +25,7 @@ import (
 type RouterConfig struct {
 	AuthHandler             *auth_http.AuthHandler
 	AuthMiddleware          *middleware.AuthMiddleWare
+	MetricsToken            string
 	BuyerCurrencyMiddleware *middleware.BuyerCurrencyMiddleware
 	SpecHandler             *catalog_http.SpecHandler
 	SpecUploadHandler       *catalog_http.SpecUploadHandler
@@ -58,7 +61,17 @@ func SetupRoutes(config RouterConfig) *http.ServeMux {
 	})
 
 	// Prometheus Metrics Endpoint
-	mux.Handle("GET /metrics", config.AuthMiddleware.Authorize(middleware.PermAdminAnalyticsRead)(promhttp.Handler()))
+	metrics := promhttp.Handler()
+	adminMetrics := config.AuthMiddleware.Authorize(middleware.PermAdminAnalyticsRead)(metrics)
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		if config.MetricsToken != "" && strings.EqualFold(scheme, "Bearer") &&
+			subtle.ConstantTimeCompare([]byte(token), []byte(config.MetricsToken)) == 1 {
+			metrics.ServeHTTP(w, r)
+			return
+		}
+		adminMetrics.ServeHTTP(w, r)
+	})
 
 	if !config.DisableAPIDocs {
 		apidocs.Register(mux)

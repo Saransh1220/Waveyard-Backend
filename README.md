@@ -185,6 +185,22 @@ Open `.env` in your editor and configure the necessary values (see [Environment 
 - Set Razorpay test keys (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`).
 
 ### Step 3: Start Infrastructure Containers
+Create a local scrape credential once before starting Docker Compose. The API and Prometheus read the same ignored file.
+
+```bash
+openssl rand -hex 32 > .metrics-token
+```
+
+On Windows PowerShell:
+
+```powershell
+$bytes = New-Object byte[] 32
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+[IO.File]::WriteAllText((Join-Path (Get-Location) '.metrics-token'), [Convert]::ToBase64String($bytes))
+```
+
 Launch PostgreSQL, Redis, Prometheus, and Grafana in the background using Docker Compose:
 
 ```bash

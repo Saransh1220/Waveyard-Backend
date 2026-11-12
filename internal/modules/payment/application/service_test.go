@@ -192,6 +192,11 @@ func (m *fileSvcMock) GetPresignedURL(ctx context.Context, key string, expiratio
 	return args.String(0), args.Error(1)
 }
 
+func (m *fileSvcMock) GetPresignedDownloadURL(ctx context.Context, key, filename string, expiration time.Duration) (string, error) {
+	args := m.Called(ctx, key, filename, expiration)
+	return args.String(0), args.Error(1)
+}
+
 type userFinderMock struct{ mock.Mock }
 
 func (m *userFinderMock) FindByID(ctx context.Context, id uuid.UUID) (*authDomain.User, error) {
@@ -300,11 +305,11 @@ func TestPaymentService_GetUserLicensesAndDownloads(t *testing.T) {
 	lr.On("GetByID", ctx, licenseID).Return(lic, nil).Once()
 	sf.On("FindByIDIncludingDeleted", ctx, specID).Return(spec, nil).Once()
 	fs.On("GetKeyFromUrl", "http://bucket/prev.mp3").Return("prev.mp3", nil).Once()
-	fs.On("GetPresignedURL", ctx, "prev.mp3", mock.Anything).Return("signed-prev", nil).Once()
+	fs.On("GetPresignedDownloadURL", ctx, "prev.mp3", mock.Anything, time.Hour).Return("signed-prev", nil).Once()
 	fs.On("GetKeyFromUrl", wav).Return("wav.wav", nil).Once()
-	fs.On("GetPresignedURL", ctx, "wav.wav", mock.Anything).Return("signed-wav", nil).Once()
+	fs.On("GetPresignedDownloadURL", ctx, "wav.wav", mock.Anything, time.Hour).Return("signed-wav", nil).Once()
 	fs.On("GetKeyFromUrl", stems).Return("stems.zip", nil).Once()
-	fs.On("GetPresignedURL", ctx, "stems.zip", mock.Anything).Return("signed-stems", nil).Once()
+	fs.On("GetPresignedDownloadURL", ctx, "stems.zip", mock.Anything, time.Hour).Return("signed-stems", nil).Once()
 	lr.On("IncrementDownloads", ctx, licenseID).Return(nil).Once()
 	dl, err := s.GetLicenseDownloads(ctx, licenseID, userID)
 	assert.NoError(t, err)

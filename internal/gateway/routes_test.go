@@ -80,6 +80,7 @@ func TestSetupRoutes_MetricsEndpoint(t *testing.T) {
 	config := RouterConfig{
 		AuthHandler:         &auth_http.AuthHandler{},
 		AuthMiddleware:      middleware.NewAuthMiddleware("test-secret"),
+		MetricsToken:        "test-scrape-credential",
 		SpecHandler:         &catalog_http.SpecHandler{},
 		UserHandler:         &user_http.UserHandler{},
 		PaymentHandler:      &payment_http.PaymentHandler{},
@@ -88,11 +89,23 @@ func TestSetupRoutes_MetricsEndpoint(t *testing.T) {
 	}
 	mux := SetupRoutes(config)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for unauthenticated metrics, got %d", w.Code)
+	for _, tc := range []struct {
+		path string
+		auth string
+		want int
+	}{
+		{"/metrics", "", http.StatusUnauthorized},
+		{"/metrics", "Bearer wrong-token", http.StatusUnauthorized},
+		{"/metrics", "Bearer test-scrape-credential", http.StatusOK},
+		{"/orders", "Bearer test-scrape-credential", http.StatusUnauthorized},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.Header.Set("Authorization", tc.auth)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Errorf("%s: expected %d, got %d", tc.path, tc.want, w.Code)
+		}
 	}
 }
 

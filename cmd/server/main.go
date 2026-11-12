@@ -42,6 +42,17 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
+	var metricsToken string
+	if path := os.Getenv("METRICS_TOKEN_FILE"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			log.Fatalf("Failed to read metrics token file: %v", err)
+		}
+		metricsToken = strings.TrimSpace(string(raw))
+		if metricsToken == "" {
+			log.Fatal("Metrics token file is empty")
+		}
+	}
 
 	if cfg.Migration.AutoRun {
 		logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -176,6 +187,7 @@ func main() {
 	mux := gateway.SetupRoutes(gateway.RouterConfig{
 		AuthHandler:             authModule.HTTPHandler(),
 		AuthMiddleware:          authMiddleware,
+		MetricsToken:            metricsToken,
 		BuyerCurrencyMiddleware: buyerCurrencyMiddleware,
 		SpecHandler:             catalogModule.HTTPHandler(),
 		SpecUploadHandler:       catalogModule.UploadHTTPHandler(),

@@ -3,5 +3,7 @@ global:
 
 scrape_configs:
   - job_name: 'blueprint-audio-backend'
+    authorization:
+      credentials_file: /run/secrets/metrics_token
     static_configs:
       - targets: ['api:8080']

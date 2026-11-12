@@ -153,7 +153,7 @@ func TestPaymentService_GetLicenseDownloads_ByLicenseType(t *testing.T) {
 	t.Run("Basic only mp3", func(t *testing.T) {
 		s, _, fs, id := mkSvc("Basic", fullSpec())
 		fs.On("GetKeyFromUrl", "https://cdn/preview").Return("p", nil)
-		fs.On("GetPresignedURL", ctx, "p", time.Hour).Return("signed-p", nil)
+		fs.On("GetPresignedDownloadURL", ctx, "p", "T.mp3", time.Hour).Return("signed-p", nil)
 		res, err := s.GetLicenseDownloads(ctx, id, uid)
 		require.NoError(t, err)
 		assert.Equal(t, "signed-p", *res.MP3URL)
@@ -162,27 +162,23 @@ func TestPaymentService_GetLicenseDownloads_ByLicenseType(t *testing.T) {
 		assert.Equal(t, 3600, res.ExpiresIn)
 		assert.Equal(t, "T", res.SpecTitle)
 	})
-	t.Run("Premium mp3 and wav, key error falls back to raw url", func(t *testing.T) {
+	t.Run("Premium download fails when an entitled file cannot be located", func(t *testing.T) {
 		s, _, fs, id := mkSvc("Premium", fullSpec())
 		fs.On("GetKeyFromUrl", "https://cdn/preview").Return("p", nil)
-		fs.On("GetPresignedURL", ctx, "p", time.Hour).Return("signed-p", nil)
+		fs.On("GetPresignedDownloadURL", ctx, "p", "T.mp3", time.Hour).Return("signed-p", nil)
 		fs.On("GetKeyFromUrl", wav).Return("", errors.New("bad"))
 		res, err := s.GetLicenseDownloads(ctx, id, uid)
-		require.NoError(t, err)
-		assert.Equal(t, "signed-p", *res.MP3URL)
-		assert.Equal(t, wav, *res.WAVURL)
-		assert.Nil(t, res.StemsURL)
+		require.Error(t, err)
+		assert.Nil(t, res)
 	})
 	for _, lt := range []string{"Trackout", "Unlimited"} {
-		t.Run(lt+" everything, sign error falls back", func(t *testing.T) {
+		t.Run(lt+" fails when a link cannot be signed", func(t *testing.T) {
 			s, _, fs, id := mkSvc(lt, fullSpec())
 			fs.On("GetKeyFromUrl", mock.Anything).Return("k", nil)
-			fs.On("GetPresignedURL", ctx, "k", time.Hour).Return("", errors.New("sign"))
+			fs.On("GetPresignedDownloadURL", ctx, "k", "T.mp3", time.Hour).Return("", errors.New("sign"))
 			res, err := s.GetLicenseDownloads(ctx, id, uid)
-			require.NoError(t, err)
-			assert.Equal(t, "https://cdn/preview", *res.MP3URL)
-			assert.Equal(t, wav, *res.WAVURL)
-			assert.Equal(t, stems, *res.StemsURL)
+			require.Error(t, err)
+			assert.Nil(t, res)
 		})
 	}
 	t.Run("empty urls yield nil", func(t *testing.T) {

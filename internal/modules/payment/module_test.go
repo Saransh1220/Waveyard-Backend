@@ -45,6 +45,10 @@ func (nilFileService) GetPresignedURL(_ context.Context, _ string, _ time.Durati
 	return "", nil
 }
 
+func (nilFileService) GetPresignedDownloadURL(_ context.Context, _, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+
 type nilUserFinder struct{}
 
 func (nilUserFinder) FindByID(_ context.Context, id uuid.UUID) (*authDomain.User, error) {

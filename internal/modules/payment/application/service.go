@@ -20,6 +20,7 @@ import (
 type FileService interface {
 	GetKeyFromUrl(url string) (string, error)
 	GetPresignedURL(ctx context.Context, key string, expiresIn time.Duration) (string, error)
+	GetPresignedDownloadURL(ctx context.Context, key string, filename string, expiresIn time.Duration) (string, error)
 }
 
 type PaymentService interface {
@@ -1162,43 +1163,47 @@ func (s *paymentService) GetLicenseDownloads(ctx context.Context, licenseID, use
 		ExpiresIn:   3600,
 	}
 
-	getSignedURL := func(fileURL string) *string {
-		if fileURL == "" {
-			return nil
-		}
-		key, err := s.fileService.GetKeyFromUrl(fileURL)
-		if err != nil {
-			return &fileURL
-		}
-		signedURL, err := s.fileService.GetPresignedURL(ctx, key, 1*time.Hour)
-		if err != nil {
-			return &fileURL
-		}
-		return &signedURL
+	type download struct {
+		source      *string
+		extension   string
+		destination **string
 	}
+	mp3 := download{&spec.PreviewUrl, ".mp3", &response.MP3URL}
+	wav := download{spec.WavUrl, ".wav", &response.WAVURL}
+	stems := download{spec.StemsUrl, "-stems.zip", &response.StemsURL}
+	var files []download
 
 	switch license.LicenseType {
 	case "Basic":
-		if spec.PreviewUrl != "" {
-			response.MP3URL = getSignedURL(spec.PreviewUrl)
-		}
+		files = []download{mp3}
 	case "Premium":
-		if spec.PreviewUrl != "" {
-			response.MP3URL = getSignedURL(spec.PreviewUrl)
-		}
-		if spec.WavUrl != nil && *spec.WavUrl != "" {
-			response.WAVURL = getSignedURL(*spec.WavUrl)
-		}
+		files = []download{mp3, wav}
 	case "Trackout", "Unlimited":
-		if spec.PreviewUrl != "" {
-			response.MP3URL = getSignedURL(spec.PreviewUrl)
+		files = []download{mp3, wav, stems}
+	}
+
+	title := strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '_'
 		}
-		if spec.WavUrl != nil && *spec.WavUrl != "" {
-			response.WAVURL = getSignedURL(*spec.WavUrl)
+		return r
+	}, strings.TrimSpace(spec.Title))
+	if title == "" {
+		title = "waveyard"
+	}
+	for _, file := range files {
+		if file.source == nil || *file.source == "" {
+			continue
 		}
-		if spec.StemsUrl != nil && *spec.StemsUrl != "" {
-			response.StemsURL = getSignedURL(*spec.StemsUrl)
+		key, err := s.fileService.GetKeyFromUrl(*file.source)
+		if err != nil {
+			return nil, errors.New("could not locate purchased file")
 		}
+		url, err := s.fileService.GetPresignedDownloadURL(ctx, key, title+file.extension, time.Hour)
+		if err != nil {
+			return nil, errors.New("could not generate purchased file download link")
+		}
+		*file.destination = &url
 	}
 
 	_ = s.licenseRepo.IncrementDownloads(ctx, licenseID)

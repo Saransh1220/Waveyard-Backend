@@ -17,6 +17,7 @@ coverage/
 # Local Environment Config
 .env
 .env.local
+.metrics-token
 docker-compose.override.yml
 
 # Dependency directories (if used)

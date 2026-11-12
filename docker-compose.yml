@@ -43,12 +43,15 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: blueprint-audio_api
+    secrets:
+      - metrics_token
     ports:
       - "8080:8080"
     environment:
       # Server
       PORT: ${PORT:-8080}
       ENV: ${ENV:-development}
+      METRICS_TOKEN_FILE: /run/secrets/metrics_token
 
       # Migrations
       AUTO_MIGRATE: ${AUTO_MIGRATE:-false}
@@ -173,6 +176,8 @@ services:
   prometheus:
     image: prom/prometheus:v2.45.0
     container_name: blueprint-audio_prometheus
+    secrets:
+      - metrics_token
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
@@ -200,6 +205,10 @@ volumes:
     driver: local
   # minio_data:  # Removed - using R2
   #   driver: local
+
+secrets:
+  metrics_token:
+    file: ./.metrics-token
 
 networks:
   blueprint-audio_network:
