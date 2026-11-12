@@ -33,6 +33,22 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID uuid.UUID, req U
 		req.StoreCurrency = &normalized
 	}
 
+	if req.Handle != nil {
+		handle := authDomain.NormalizeHandle(*req.Handle)
+		if err := authDomain.ValidateHandle(handle); err != nil {
+			return err
+		}
+		updater, ok := s.repo.(interface {
+			UpdateHandle(context.Context, uuid.UUID, string) error
+		})
+		if !ok {
+			return fmt.Errorf("handle changes are not supported")
+		}
+		if err := updater.UpdateHandle(ctx, userID, handle); err != nil {
+			return err
+		}
+	}
+
 	return s.repo.UpdateProfile(
 		ctx,
 		userID,
@@ -67,6 +83,7 @@ func (s *UserService) GetPublicProfile(ctx context.Context, userID uuid.UUID) (*
 	return &PublicUserResponse{
 		ID:            user.ID.String(),
 		Name:          user.Name,
+		Handle:        user.Handle,
 		DisplayName:   user.DisplayName,
 		Role:          string(user.Role),
 		Bio:           user.Bio,
@@ -129,7 +146,7 @@ func (s *UserService) GetPublicProfileByHandle(ctx context.Context, handle strin
 	if !ok {
 		return nil, authDomain.ErrUserNotFound
 	}
-	user, err := finder.GetByHandle(ctx, strings.TrimPrefix(strings.TrimSpace(handle), "@"))
+	user, err := finder.GetByHandle(ctx, authDomain.NormalizeHandle(handle))
 	if err != nil {
 		return nil, err
 	}

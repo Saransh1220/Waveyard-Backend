@@ -75,6 +75,10 @@ func (h *UserHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.service.UpdateProfile(r.Context(), userID, req); err != nil {
+		if errors.Is(err, authDomain.ErrHandleTaken) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

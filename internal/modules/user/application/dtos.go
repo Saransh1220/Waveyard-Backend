@@ -3,6 +3,7 @@ package application
 // UpdateProfileRequest represents the request body for updating a user's profile
 type UpdateProfileRequest struct {
 	Bio           *string `json:"bio,omitempty"`
+	Handle        *string `json:"handle,omitempty"`
 	AvatarURL     *string `json:"avatar_url,omitempty"`
 	BannerURL     *string `json:"banner_url,omitempty"`
 	DisplayName   *string `json:"display_name,omitempty"`
@@ -17,6 +18,7 @@ type UpdateProfileRequest struct {
 type PublicUserResponse struct {
 	ID            string  `json:"id"`
 	Name          string  `json:"name"`
+	Handle        string  `json:"handle"`
 	DisplayName   *string `json:"display_name,omitempty"`
 	Role          string  `json:"role"`
 	Bio           *string `json:"bio,omitempty"`
