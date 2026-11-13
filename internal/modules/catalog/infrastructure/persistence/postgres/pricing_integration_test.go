@@ -79,7 +79,7 @@ func TestPricingIntegrationEditReloadListAndManifestRecovery(t *testing.T) {
 	repo := pg.NewSpecRepository(db)
 	owner := uuid.New()
 	name := uuid.NewString()
-	_, err := db.Exec(`INSERT INTO users(id,email,password_hash,name,display_name,role) VALUES($1,$2,'hash',$3,$4,'producer')`, owner, name+"@example.test", name, name)
+	_, err := db.Exec(`INSERT INTO users(id,email,password_hash,name,display_name,handle,role) VALUES($1,$2,'hash',$3,$4,$5,'producer')`, owner, name+"@example.test", name, name, "p"+strings.ReplaceAll(name, "-", "")[:12])
 	require.NoError(t, err)
 	spec := &domain.Spec{ProducerID: owner, Title: "Isolated pricing", BPM: 120, Key: "C MAJOR", Category: domain.CategorySample, Type: "pack", PriceCurrency: "INR", BasePrice: 1000, ProcessingStatus: domain.ProcessingStatusCompleted,
 		Licenses: []domain.LicenseOption{{LicenseType: domain.LicenseBasic, Name: "Basic", Price: 1000, PriceCurrency: "INR", Prices: []money.StoredPrice{
