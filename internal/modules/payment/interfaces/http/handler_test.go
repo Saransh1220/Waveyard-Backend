@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/saransh1220/blueprint-audio/internal/gateway/middleware"
@@ -70,6 +71,21 @@ func (m mockPaymentService) GetOrderStatus(ctx context.Context, orderID, userID 
 		return m.getOrderStatusFn(ctx, orderID, userID)
 	}
 	return nil, nil
+}
+func (m mockPaymentService) InitiateRefund(ctx context.Context, input application.CreateRefundInput) (*application.OrderRefundResponse, error) {
+	return nil, nil
+}
+func (m mockPaymentService) GetOrderRefunds(ctx context.Context, orderID uuid.UUID) ([]domain.OrderRefund, error) {
+	return nil, nil
+}
+func (m mockPaymentService) ListWebhookEvents(ctx context.Context, filter domain.WebhookEventFilter, limit, offset int) ([]domain.PaymentWebhookEvent, int, error) {
+	return nil, 0, nil
+}
+func (m mockPaymentService) RequeueWebhookEvent(ctx context.Context, eventID uuid.UUID) error {
+	return nil
+}
+func (m mockPaymentService) ProcessNextWebhookBatch(ctx context.Context, workerID string, batchSize int, leaseDuration time.Duration) (int, error) {
+	return 0, nil
 }
 
 func authedReq(method, path, body string) *http.Request {
@@ -204,4 +220,8 @@ func TestPaymentHandler_ErrorBranches(t *testing.T) {
 	w = httptest.NewRecorder()
 	h.GetProducerOrders(w, authedReq(http.MethodGet, "/producer/orders", ""))
 	require.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func (m mockPaymentService) ReconcileOrderCheckout(context.Context, uuid.UUID, string) error {
+	return nil
 }

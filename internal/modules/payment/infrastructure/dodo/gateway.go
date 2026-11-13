@@ -41,6 +41,7 @@ type Gateway struct {
 var (
 	_ domain.Gateway          = (*Gateway)(nil)
 	_ domain.WebhookConfirmer = (*Gateway)(nil)
+	_ domain.Refunder         = (*Gateway)(nil)
 )
 
 func NewGateway(cfg Config) *Gateway {
@@ -96,9 +97,14 @@ func (g *Gateway) CreateCheckout(ctx context.Context, req domain.CheckoutRequest
 			"quantity":   1,
 			"amount":     order.Amount,
 		}},
-		"return_url":  returnURL,
-		"metadata":    metadata,
-		"custom_data": metadata,
+		"return_url":       returnURL,
+		"metadata":         metadata,
+		"billing_currency": order.Currency,
+		"feature_flags": map[string]bool{
+			"allow_currency_selection": false,
+			"allow_discount_code":      false,
+			"allow_editing_addons":     false,
+		},
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -133,6 +139,75 @@ func (g *Gateway) CreateCheckout(ctx context.Context, req domain.CheckoutRequest
 	return domain.CheckoutSession{ProviderRef: decoded.SessionID, CheckoutURL: *decoded.CheckoutURL}, nil
 }
 
+func (g *Gateway) Refund(ctx context.Context, req domain.RefundRequest) (*domain.RefundResult, error) {
+	apiKey := strings.TrimSpace(g.cfg.APIKey)
+	if apiKey == "" {
+		return nil, errors.New("dodo payments is not configured")
+	}
+	baseURL := strings.TrimRight(g.cfg.APIURL, "/")
+	if baseURL == "" {
+		baseURL = "https://test.dodopayments.com"
+	}
+
+	body := map[string]any{
+		"payment_id": req.ProviderPaymentID,
+		"reason":     req.Reason,
+		"metadata": map[string]any{
+			"order_id":        req.OrderID.String(),
+			"idempotency_key": req.IdempotencyKey,
+		},
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/refunds", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	res, err := g.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("dodo refund failed: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return nil, fmt.Errorf("dodo refund failed with status %d: %s", res.StatusCode, strings.TrimSpace(string(msg)))
+	}
+
+	var decoded struct {
+		RefundID  string `json:"refund_id"`
+		PaymentID string `json:"payment_id"`
+		Partial   *bool  `json:"is_partial"`
+		Status    string `json:"status"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
+		return nil, err
+	}
+
+	if decoded.PaymentID != req.ProviderPaymentID || decoded.Partial == nil || *decoded.Partial {
+		return nil, errors.New("dodo returned an unverified full refund")
+	}
+	status := strings.ToLower(strings.TrimSpace(decoded.Status))
+	if status == "succeeded" {
+		status = domain.RefundStatusSucceeded
+	} else if status == "review" {
+		status = domain.RefundStatusNeedsReview
+	} else if status == "" {
+		status = domain.RefundStatusPending
+	}
+
+	return &domain.RefundResult{
+		ProviderRefundID: decoded.RefundID,
+		Status:           status,
+	}, nil
+}
+
 func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*domain.PaymentConfirmation, error) {
 	if err := g.verifySignature(payload, headers); err != nil {
 		return nil, err
@@ -144,6 +219,25 @@ func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*doma
 	}
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return nil, domain.ErrMalformedPayload
+	}
+	if event.Type == "refund.succeeded" || event.Type == "refund.failed" {
+		refundID := stringFromAny(event.Data["refund_id"])
+		paymentID := stringFromAny(event.Data["payment_id"])
+		partial, hasPartial := event.Data["is_partial"].(bool)
+		amount := extractAmountMinor(event.Data)
+		if refundID == "" || paymentID == "" || !hasPartial || amount < 0 || amount > 1<<31-1 ||
+			(partial && (amount == 0 || extractCurrency(event.Data) == "")) {
+			return nil, domain.ErrMalformedPayload
+		}
+		metadata, _ := event.Data["metadata"].(map[string]any)
+		return &domain.PaymentConfirmation{
+			EventID: headers["webhook-id"], ProviderPaymentID: paymentID,
+			Refund: &domain.RefundConfirmation{
+				ProviderRefundID: refundID, Amount: int(amount), Currency: extractCurrency(event.Data),
+				Full: !partial, Status: strings.TrimPrefix(event.Type, "refund."),
+				IntentKey: stringFromAny(metadata["idempotency_key"]),
+			},
+		}, nil
 	}
 	if event.Type != "payment.succeeded" {
 		return nil, nil
@@ -158,12 +252,15 @@ func (g *Gateway) ParseWebhook(payload []byte, headers map[string]string) (*doma
 	}
 
 	amountMinor := extractAmountMinor(event.Data)
+	taxMinor, _ := event.Data["tax"].(float64)
 	currency := extractCurrency(event.Data)
 
 	return &domain.PaymentConfirmation{
 		OrderID:             orderID,
+		ProviderCheckoutID:  stringFromAny(event.Data["checkout_session_id"]),
 		ProviderPaymentID:   paymentID,
 		ReportedAmountMinor: amountMinor,
+		ReportedTaxMinor:    int64(taxMinor),
 		ReportedCurrency:    currency,
 		Signature:           headers["webhook-signature"],
 		EventID:             headers["webhook-id"],
@@ -243,22 +340,30 @@ func compareSignature(received string, expected ...string) bool {
 }
 
 func extractOrderMetadata(data map[string]any) (uuid.UUID, string) {
+	if data == nil {
+		return uuid.Nil, ""
+	}
 	paymentID := stringFromAny(data["payment_id"])
 	if paymentID == "" {
 		paymentID = stringFromAny(data["id"])
 	}
 
-	candidates := []any{data["metadata"], data["custom_data"]}
-	for _, candidate := range candidates {
-		if meta, ok := candidate.(map[string]any); ok {
-			if id, err := uuid.Parse(stringFromAny(meta["order_id"])); err == nil {
-				return id, paymentID
+	for _, containerKey := range []string{"metadata", "custom_data"} {
+		if container, ok := data[containerKey].(map[string]any); ok && container != nil {
+			if idStr := stringFromAny(container["order_id"]); idStr != "" {
+				if id, err := uuid.Parse(idStr); err == nil {
+					return id, paymentID
+				}
 			}
 		}
 	}
-	if id, err := uuid.Parse(stringFromAny(data["order_id"])); err == nil {
-		return id, paymentID
+
+	if idStr := stringFromAny(data["order_id"]); idStr != "" {
+		if id, err := uuid.Parse(idStr); err == nil {
+			return id, paymentID
+		}
 	}
+
 	return uuid.Nil, paymentID
 }
 

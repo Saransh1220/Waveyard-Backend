@@ -28,7 +28,7 @@ func CORSMiddleware(next http.Handler, allowedOrigins string) http.Handler {
 		// Always set these for preflight to work if origin matches
 		if validOrigin {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 

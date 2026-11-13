@@ -26,6 +26,7 @@ import (
 	"github.com/saransh1220/blueprint-audio/internal/modules/legal"
 	"github.com/saransh1220/blueprint-audio/internal/modules/notification"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment"
+	paymentApplication "github.com/saransh1220/blueprint-audio/internal/modules/payment/application"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment/infrastructure/dodo"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment/infrastructure/razorpay"
 	"github.com/saransh1220/blueprint-audio/internal/modules/user"
@@ -40,6 +41,13 @@ func main() {
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
+	}
+	metricsToken, metricsWarning, err := loadMetricsToken(os.Getenv, os.ReadFile)
+	if err != nil {
+		log.Fatalf("Metrics token configuration invalid: %v", err)
+	}
+	if metricsWarning != "" {
+		log.Printf("WARN: %s", metricsWarning)
 	}
 
 	if cfg.Migration.AutoRun {
@@ -175,6 +183,7 @@ func main() {
 	mux := gateway.SetupRoutes(gateway.RouterConfig{
 		AuthHandler:             authModule.HTTPHandler(),
 		AuthMiddleware:          authMiddleware,
+		MetricsToken:            metricsToken,
 		BuyerCurrencyMiddleware: buyerCurrencyMiddleware,
 		SpecHandler:             catalogModule.HTTPHandler(),
 		SpecUploadHandler:       catalogModule.UploadHTTPHandler(),
@@ -199,6 +208,7 @@ func main() {
 	// 8. Start Embedded Worker (if enabled)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
+	go paymentApplication.StartWebhookWorker(workerCtx, paymentModule.Service(), paymentApplication.WebhookWorkerConfig{})
 
 	if cfg.Worker.Enabled {
 		uploadRepo := catalogPersistence.NewSpecUploadRepository(db)

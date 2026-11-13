@@ -17,7 +17,7 @@ import (
 
 var orderCols = []string{
 	"id", "user_id", "spec_id", "license_type", "amount", "currency",
-	"provider", "provider_checkout_id", "provider_payment_id",
+	"provider", "provider_checkout_id", "provider_payment_id", "checkout_url",
 	"status", "notes", "created_at", "updated_at", "expires_at",
 	"report_currency", "report_fx_rate", "report_fx_as_of", "report_fx_fetched_at", "report_fx_rate_id",
 }
@@ -54,14 +54,14 @@ func TestPgOrderRepository_GetByID_Branches(t *testing.T) {
 
 	// success with notes
 	mock.ExpectQuery(`FROM orders\s+WHERE id = \$1`).WithArgs(id).WillReturnRows(
-		sqlmock.NewRows(orderCols).AddRow(id, uuid.New(), uuid.New(), "Basic", 1000, "INR", "razorpay", nil, nil, "pending", []byte(`{"k":"v"}`), time.Now(), time.Now(), time.Now(), nil, nil, nil, nil, nil))
+		sqlmock.NewRows(orderCols).AddRow(id, uuid.New(), uuid.New(), "Basic", 1000, "INR", "razorpay", nil, nil, nil, "pending", []byte(`{"k":"v"}`), time.Now(), time.Now(), time.Now(), nil, nil, nil, nil, nil))
 	got, err := repo.GetByID(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, "v", got.Notes["k"])
 
 	// success without notes
 	mock.ExpectQuery(`FROM orders\s+WHERE id = \$1`).WithArgs(id).WillReturnRows(
-		sqlmock.NewRows(orderCols).AddRow(id, uuid.New(), uuid.New(), "Basic", 1000, "INR", "razorpay", nil, nil, "pending", []byte{}, time.Now(), time.Now(), time.Now(), nil, nil, nil, nil, nil))
+		sqlmock.NewRows(orderCols).AddRow(id, uuid.New(), uuid.New(), "Basic", 1000, "INR", "razorpay", nil, nil, nil, "pending", []byte{}, time.Now(), time.Now(), time.Now(), nil, nil, nil, nil, nil))
 	got, err = repo.GetByID(ctx, id)
 	require.NoError(t, err)
 	assert.Nil(t, got.Notes)
@@ -80,7 +80,7 @@ func TestPgOrderRepository_GetByID_Branches(t *testing.T) {
 
 	// invalid notes JSON
 	mock.ExpectQuery(`FROM orders\s+WHERE id = \$1`).WithArgs(id).WillReturnRows(
-		sqlmock.NewRows(orderCols).AddRow(id, uuid.New(), uuid.New(), "Basic", 1000, "INR", "razorpay", nil, nil, "pending", []byte(`{not json`), time.Now(), time.Now(), time.Now(), nil, nil, nil, nil, nil))
+		sqlmock.NewRows(orderCols).AddRow(id, uuid.New(), uuid.New(), "Basic", 1000, "INR", "razorpay", nil, nil, nil, "pending", []byte(`{not json`), time.Now(), time.Now(), time.Now(), nil, nil, nil, nil, nil))
 	got, err = repo.GetByID(ctx, id)
 	assert.Nil(t, got)
 	assert.Error(t, err)

@@ -58,6 +58,14 @@ func (m *orderRepoMock) ListByProducer(ctx context.Context, producerID uuid.UUID
 	}
 	return args.Get(0).([]domain.OrderWithBuyer), args.Int(1), args.Error(2)
 }
+func (m *orderRepoMock) AttachCheckoutDetails(ctx context.Context, id uuid.UUID, providerCheckoutID, checkoutURL string) error {
+	args := m.Called(ctx, id, providerCheckoutID, checkoutURL)
+	return args.Error(0)
+}
+func (m *orderRepoMock) MarkRefunded(ctx context.Context, id uuid.UUID) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
 
 type paymentRepoMock struct{ mock.Mock }
 
@@ -85,6 +93,10 @@ func (m *paymentRepoMock) GetByProviderPaymentID(ctx context.Context, provider, 
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*domain.Payment), args.Error(1)
+}
+func (m *paymentRepoMock) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.PaymentStatus) error {
+	args := m.Called(ctx, id, status)
+	return args.Error(0)
 }
 
 type licenseRepoMock struct{ mock.Mock }
@@ -180,6 +192,11 @@ func (m *fileSvcMock) GetPresignedURL(ctx context.Context, key string, expiratio
 	return args.String(0), args.Error(1)
 }
 
+func (m *fileSvcMock) GetPresignedDownloadURL(ctx context.Context, key, filename string, expiration time.Duration) (string, error) {
+	args := m.Called(ctx, key, filename, expiration)
+	return args.String(0), args.Error(1)
+}
+
 type userFinderMock struct{ mock.Mock }
 
 func (m *userFinderMock) FindByID(ctx context.Context, id uuid.UUID) (*authDomain.User, error) {
@@ -209,6 +226,7 @@ func newPaymentSvc() (*paymentService, *orderRepoMock, *paymentRepoMock, *licens
 	fs := new(fileSvcMock)
 	uf := new(userFinderMock)
 	es := new(emailSenderMock)
+	or.On("AttachCheckoutDetails", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 	return &paymentService{
 		orderRepo:   or,
 		paymentRepo: pr,
@@ -287,11 +305,11 @@ func TestPaymentService_GetUserLicensesAndDownloads(t *testing.T) {
 	lr.On("GetByID", ctx, licenseID).Return(lic, nil).Once()
 	sf.On("FindByIDIncludingDeleted", ctx, specID).Return(spec, nil).Once()
 	fs.On("GetKeyFromUrl", "http://bucket/prev.mp3").Return("prev.mp3", nil).Once()
-	fs.On("GetPresignedURL", ctx, "prev.mp3", mock.Anything).Return("signed-prev", nil).Once()
+	fs.On("GetPresignedDownloadURL", ctx, "prev.mp3", mock.Anything, time.Hour).Return("signed-prev", nil).Once()
 	fs.On("GetKeyFromUrl", wav).Return("wav.wav", nil).Once()
-	fs.On("GetPresignedURL", ctx, "wav.wav", mock.Anything).Return("signed-wav", nil).Once()
+	fs.On("GetPresignedDownloadURL", ctx, "wav.wav", mock.Anything, time.Hour).Return("signed-wav", nil).Once()
 	fs.On("GetKeyFromUrl", stems).Return("stems.zip", nil).Once()
-	fs.On("GetPresignedURL", ctx, "stems.zip", mock.Anything).Return("signed-stems", nil).Once()
+	fs.On("GetPresignedDownloadURL", ctx, "stems.zip", mock.Anything, time.Hour).Return("signed-stems", nil).Once()
 	lr.On("IncrementDownloads", ctx, licenseID).Return(nil).Once()
 	dl, err := s.GetLicenseDownloads(ctx, licenseID, userID)
 	assert.NoError(t, err)

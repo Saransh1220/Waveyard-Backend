@@ -17,4 +17,7 @@ func TestModuleAccessors(t *testing.T) {
 	require.NotNil(t, m.SpecFinder())
 	require.NotNil(t, m.Service())
 	require.NotNil(t, m.HTTPHandler())
+	require.NotNil(t, m.UploadRepository())
+	require.NotNil(t, m.UploadService())
+	require.NotNil(t, m.UploadHTTPHandler())
 }

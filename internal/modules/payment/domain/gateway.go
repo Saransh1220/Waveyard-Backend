@@ -14,10 +14,20 @@ const (
 
 // Gateway is the strategy every payment provider implements: how to start a
 // checkout. How a payment is later confirmed differs per provider, so that
-// lives in the optional ClientConfirmer and WebhookConfirmer interfaces.
+// lives in the optional ClientConfirmer, WebhookConfirmer, and Refunder interfaces.
 type Gateway interface {
 	Name() string
 	CreateCheckout(ctx context.Context, req CheckoutRequest) (CheckoutSession, error)
+}
+
+// CheckoutFinder recovers an existing checkout or capture using provider reads.
+type CheckoutFinder interface {
+	FindCheckout(ctx context.Context, order *Order) (*CheckoutSession, *PaymentConfirmation, error)
+}
+
+// CheckoutReferenceFinder verifies an operator-supplied provider reference.
+type CheckoutReferenceFinder interface {
+	FindCheckoutByReference(ctx context.Context, order *Order, reference string) (*CheckoutSession, *PaymentConfirmation, error)
 }
 
 type CheckoutRequest struct {
@@ -40,11 +50,23 @@ type PaymentConfirmation struct {
 	ProviderCheckoutID  string
 	ProviderPaymentID   string
 	ReportedAmountMinor int64
+	ReportedTaxMinor    int64
 	ReportedCurrency    string
 	Signature           string
 	Method              *string
 	Email               *string
 	EventID             string
+	Refund              *RefundConfirmation
+}
+
+// RefundConfirmation contains facts from an authenticated provider response.
+type RefundConfirmation struct {
+	ProviderRefundID string
+	Amount           int
+	Currency         string
+	Full             bool
+	Status           string
+	IntentKey        string
 }
 
 // ClientConfirmer is implemented by gateways where the browser reports the
@@ -58,4 +80,24 @@ type ClientConfirmer interface {
 // valid but needs no action.
 type WebhookConfirmer interface {
 	ParseWebhook(payload []byte, headers map[string]string) (*PaymentConfirmation, error)
+}
+
+type RefundRequest struct {
+	IdempotencyKey    string
+	OrderID           uuid.UUID
+	ProviderPaymentID string
+	AmountMinor       int
+	Currency          string
+	Reason            string
+}
+
+type RefundResult struct {
+	ProviderRefundID string
+	Status           string // "succeeded", "pending", "failed"
+	FailureReason    *string
+}
+
+// Refunder is implemented by gateways that support server-initiated refunds.
+type Refunder interface {
+	Refund(ctx context.Context, req RefundRequest) (*RefundResult, error)
 }

@@ -112,6 +112,7 @@ func TestPaymentService_CreateOrder_UsesGatewayForCurrency(t *testing.T) {
 		specID := uuid.New()
 		sf.On("FindWithLicenses", ctx, specID).Return(specWithLicense(loID, catalogDomain.ProcessingStatusCompleted, "INR"), nil).Once()
 		or.On("Create", ctx, mock.AnythingOfType("*domain.Order")).Return(nil).Once()
+		or.On("AttachCheckoutDetails", ctx, mock.AnythingOfType("uuid.UUID"), "order_fake_1", "").Return(nil).Once()
 
 		order, err := s.CreateOrder(ctx, uuid.New(), specID, loID, "INR")
 		require.NoError(t, err)
@@ -133,6 +134,7 @@ func TestPaymentService_CreateOrder_UsesGatewayForCurrency(t *testing.T) {
 		specID := uuid.New()
 		sf.On("FindWithLicenses", ctx, specID).Return(specWithLicense(loID, catalogDomain.ProcessingStatusCompleted, "USD"), nil).Once()
 		or.On("Create", ctx, mock.AnythingOfType("*domain.Order")).Return(nil).Once()
+		or.On("AttachCheckoutDetails", ctx, mock.AnythingOfType("uuid.UUID"), "cks_fake_1", "https://pay.example/cks_fake_1").Return(nil).Once()
 
 		order, err := s.CreateOrder(ctx, uuid.New(), specID, loID, " usd ")
 		require.NoError(t, err)
@@ -144,15 +146,16 @@ func TestPaymentService_CreateOrder_UsesGatewayForCurrency(t *testing.T) {
 		assert.Nil(t, order.RazorpayOrderID)
 	})
 
-	t.Run("gateway failure stops before saving", func(t *testing.T) {
+	t.Run("gateway failure reserves order first and returns error", func(t *testing.T) {
 		s, or, _, _, sf, _, _, _ := newPaymentSvc()
 		specID := uuid.New()
 		sf.On("FindWithLicenses", ctx, specID).Return(specWithLicense(loID, catalogDomain.ProcessingStatusCompleted, "INR"), nil).Once()
+		or.On("Create", ctx, mock.AnythingOfType("*domain.Order")).Return(nil).Once()
 		fakeOf(s, domain.ProviderRazorpay).createErr = errors.New("razorpay down")
 
 		_, err := s.CreateOrder(ctx, uuid.New(), specID, loID, "INR")
 		assert.EqualError(t, err, "razorpay down")
-		or.AssertNotCalled(t, "Create")
+		or.AssertCalled(t, "Create", ctx, mock.AnythingOfType("*domain.Order"))
 	})
 
 	t.Run("repo failure is returned", func(t *testing.T) {
@@ -406,7 +409,16 @@ func TestPaymentService_HandleWebhook(t *testing.T) {
 		s, or, pr, _, _, _, _, _ := newPaymentSvc()
 		fakeOf(s, domain.ProviderDodo).webhook = confirm()
 		or.On("GetByID", ctx, oid).Return(order(domain.OrderStatusPaid, domain.ProviderDodo, nil), nil).Once()
+		pr.On("GetByOrderID", ctx, oid).Return(&domain.Payment{OrderID: oid, ProviderPaymentID: "pay_dodo_1"}, nil).Once()
 		assert.NoError(t, s.HandleWebhook(ctx, domain.ProviderDodo, nil, nil))
+		pr.AssertNotCalled(t, "Create")
+	})
+	t.Run("already paid with distinct payment ID flags capture anomaly", func(t *testing.T) {
+		s, or, pr, _, _, _, _, _ := newPaymentSvc()
+		fakeOf(s, domain.ProviderDodo).webhook = confirm()
+		or.On("GetByID", ctx, oid).Return(order(domain.OrderStatusPaid, domain.ProviderDodo, nil), nil).Once()
+		pr.On("GetByOrderID", ctx, oid).Return(&domain.Payment{OrderID: oid, ProviderPaymentID: "pay_dodo_other"}, nil).Once()
+		assert.ErrorIs(t, s.HandleWebhook(ctx, domain.ProviderDodo, nil, nil), domain.ErrDistinctCaptureAnomaly)
 		pr.AssertNotCalled(t, "Create")
 	})
 	t.Run("not payable", func(t *testing.T) {

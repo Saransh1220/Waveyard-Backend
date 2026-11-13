@@ -17,6 +17,7 @@ type CreateOrderInput struct {
 	ExpectedRevision    *int64     `json:"expected_revision,omitempty"`
 	ExpectedAmountMinor *int       `json:"expected_amount_minor,omitempty"`
 	ExpectedCurrency    *string    `json:"expected_currency,omitempty"`
+	IdempotencyKey      string     `json:"idempotency_key,omitempty"`
 }
 
 type PriceMismatchError struct {
@@ -71,4 +72,24 @@ type OrderStatusResponse struct {
 	ExpiresAt         time.Time            `json:"expires_at"`
 	License           *OrderLicenseSummary `json:"license"`
 	RetryAfterSeconds int                  `json:"retry_after_seconds,omitempty"`
+}
+
+type CreateRefundInput struct {
+	OrderID        uuid.UUID `json:"order_id"`
+	AdminID        uuid.UUID `json:"admin_id"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	Reason         string    `json:"reason"`
+	Notes          string    `json:"notes,omitempty"`
+}
+
+type OrderRefundResponse struct {
+	ID               uuid.UUID `json:"id"`
+	OrderID          uuid.UUID `json:"order_id"`
+	PaymentID        uuid.UUID `json:"payment_id"`
+	Amount           int       `json:"amount"`
+	Currency         string    `json:"currency"`
+	Status           string    `json:"status"`
+	Reason           string    `json:"reason"`
+	ProviderRefundID *string   `json:"provider_refund_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }

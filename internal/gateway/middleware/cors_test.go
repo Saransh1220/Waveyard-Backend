@@ -19,9 +19,10 @@ func TestCORSMiddleware_PreflightRequest(t *testing.T) {
 	handler := CORSMiddleware(nextHandler, allowedOrigins)
 
 	// Preflight request
-	req := httptest.NewRequest("OPTIONS", "/test", nil)
+	req := httptest.NewRequest("OPTIONS", "/orders", nil)
 	req.Header.Set("Origin", "http://localhost:4200")
 	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type, idempotency-key")
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -30,7 +31,7 @@ func TestCORSMiddleware_PreflightRequest(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "http://localhost:4200", rec.Header().Get("Access-Control-Allow-Origin"))
 	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Methods"), "POST")
-	assert.NotEmpty(t, rec.Header().Get("Access-Control-Allow-Headers"))
+	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), "Idempotency-Key")
 }
 
 func TestCORSMiddleware_ActualRequest(t *testing.T) {

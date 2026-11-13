@@ -46,12 +46,12 @@ func (r *PgOrderRepository) Create(ctx context.Context, order *domain.Order) err
 	query := `
 		INSERT INTO orders (
 			id, user_id, spec_id, license_type, amount, currency,
-			provider, provider_checkout_id, provider_payment_id,
+			provider, provider_checkout_id, provider_payment_id, checkout_url,
 			status, notes, created_at, updated_at, expires_at,
 			report_currency, report_fx_rate, report_fx_as_of, report_fx_fetched_at, report_fx_rate_id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-			$15, $16, $17, $18, $19
+			$15, $16, $17, $18, $19, $20
 		)`
 
 	_, err = r.db.ExecContext(ctx, query,
@@ -64,8 +64,9 @@ func (r *PgOrderRepository) Create(ctx context.Context, order *domain.Order) err
 		order.Provider,
 		order.ProviderCheckoutID,
 		order.ProviderPaymentID,
+		order.CheckoutURL,
 		order.Status,
-		notesJSON, // Pass as JSON
+		notesJSON,
 		order.CreatedAt,
 		order.UpdatedAt,
 		order.ExpiresAt,
@@ -79,54 +80,12 @@ func (r *PgOrderRepository) Create(ctx context.Context, order *domain.Order) err
 }
 
 func (r *PgOrderRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Order, error) {
-	order := &domain.Order{}
-	var notesJSON []byte
-
 	query := `SELECT ` + orderColumns + ` FROM orders WHERE id = $1`
-
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&order.ID,
-		&order.UserID,
-		&order.SpecID,
-		&order.LicenseType,
-		&order.Amount,
-		&order.Currency,
-		&order.Provider,
-		&order.ProviderCheckoutID,
-		&order.ProviderPaymentID,
-		&order.Status,
-		&notesJSON,
-		&order.CreatedAt,
-		&order.UpdatedAt,
-		&order.ExpiresAt,
-		&order.ReportCurrency,
-		&order.ReportFXRate,
-		&order.ReportFXAsOf,
-		&order.ReportFXFetchedAt,
-		&order.ReportFXRateID,
-	)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, err
-		}
-		return nil, err
-	}
-
-	// Unmarshal JSONB notes
-	if len(notesJSON) > 0 {
-		if err := json.Unmarshal(notesJSON, &order.Notes); err != nil {
-			return nil, err
-		}
-	}
-
-	return order, nil
+	return scanOrder(r.db.QueryRowContext(ctx, query, id))
 }
 
-// orderColumns lists the columns scanOrder reads, in order. notes is JSONB, so
-// rows are scanned by hand rather than with SELECT * into the struct.
 const orderColumns = `id, user_id, spec_id, license_type, amount, currency,
-	provider, provider_checkout_id, provider_payment_id,
+	provider, provider_checkout_id, provider_payment_id, checkout_url,
 	status, notes, created_at, updated_at, expires_at,
 	report_currency, report_fx_rate, report_fx_as_of, report_fx_fetched_at, report_fx_rate_id`
 
@@ -135,13 +94,17 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scanOrder(row rowScanner) (*domain.Order, error) {
 	order := &domain.Order{}
 	var notesJSON []byte
+	var checkoutURL sql.NullString
 	if err := row.Scan(
 		&order.ID, &order.UserID, &order.SpecID, &order.LicenseType, &order.Amount, &order.Currency,
-		&order.Provider, &order.ProviderCheckoutID, &order.ProviderPaymentID,
+		&order.Provider, &order.ProviderCheckoutID, &order.ProviderPaymentID, &checkoutURL,
 		&order.Status, &notesJSON, &order.CreatedAt, &order.UpdatedAt, &order.ExpiresAt,
 		&order.ReportCurrency, &order.ReportFXRate, &order.ReportFXAsOf, &order.ReportFXFetchedAt, &order.ReportFXRateID,
 	); err != nil {
 		return nil, err
+	}
+	if checkoutURL.Valid {
+		order.CheckoutURL = &checkoutURL.String
 	}
 	if len(notesJSON) > 0 {
 		if err := json.Unmarshal(notesJSON, &order.Notes); err != nil {
@@ -157,8 +120,15 @@ func (r *PgOrderRepository) GetByProviderCheckoutID(ctx context.Context, provide
 }
 
 func (r *PgOrderRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.OrderStatus) error {
-	query := `UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2`
+	query := `UPDATE orders SET status = $1, updated_at = NOW()
+		WHERE id = $2 AND status IN ('pending', 'processing', 'failed')`
 	_, err := r.db.ExecContext(ctx, query, status, id)
+	return err
+}
+
+func (r *PgOrderRepository) AttachCheckoutDetails(ctx context.Context, id uuid.UUID, providerCheckoutID, checkoutURL string) error {
+	query := `UPDATE orders SET provider_checkout_id = $2, checkout_url = $3, updated_at = NOW() WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id, providerCheckoutID, checkoutURL)
 	return err
 }
 
@@ -177,6 +147,12 @@ func (r *PgOrderRepository) MarkPaidIfPayable(ctx context.Context, id uuid.UUID,
 		return false, err
 	}
 	return true, nil
+}
+
+func (r *PgOrderRepository) MarkRefunded(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, domain.OrderStatusRefunded, id)
+	return err
 }
 
 func (r *PgOrderRepository) ListByUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]domain.Order, error) {

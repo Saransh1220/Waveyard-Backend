@@ -248,3 +248,18 @@ func TestGateway_ParseWebhook(t *testing.T) {
 		assert.Equal(t, "buyer@example.com", *c.Email)
 	})
 }
+
+func TestSignedRazorpayExternalRefundWithEmptyNotes(t *testing.T) {
+	const secret = "test-webhook-secret"
+	gateway := NewGateway(Config{WebhookSecret: secret})
+	payload := []byte(`{"event":"refund.processed","payload":{"refund":{"entity":{"id":"rfnd_example","payment_id":"pay_example","amount":1000,"currency":"INR","notes":[]}}}}`)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	headers := map[string]string{"x-razorpay-signature": hex.EncodeToString(mac.Sum(nil))}
+	result, err := gateway.ParseWebhook(payload, headers)
+	require.NoError(t, err)
+	require.NotNil(t, result.Refund)
+	assert.Equal(t, "pay_example", result.ProviderPaymentID)
+	assert.Equal(t, domain.RefundStatusSucceeded, result.Refund.Status)
+	assert.Equal(t, 1000, result.Refund.Amount)
+}

@@ -284,10 +284,18 @@ func (r *PgUserRepository) UpdateProfile(ctx context.Context, id uuid.UUID, bio 
 	return err
 }
 
-// GetByHandle resolves the exact stored username without deriving it from a display name.
+// GetByHandle resolves a public handle. The unique handle wins; the legacy login name is
+// only consulted when no handle matches, so links shared before handles existed keep working.
 func (r *PgUserRepository) GetByHandle(ctx context.Context, handle string) (*domain.User, error) {
 	var users []domain.User
-	err := r.db.SelectContext(ctx, &users, `SELECT * FROM users WHERE lower(name) = lower($1) AND status = 'active' LIMIT 2`, handle)
+	err := r.db.SelectContext(ctx, &users, `SELECT * FROM users WHERE lower(handle) = lower($1) AND status = 'active' LIMIT 1`, handle)
+	if err != nil {
+		return nil, err
+	}
+	if len(users) == 1 {
+		return &users[0], nil
+	}
+	err = r.db.SelectContext(ctx, &users, `SELECT * FROM users WHERE lower(name) = lower($1) AND status = 'active' LIMIT 2`, handle)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +303,25 @@ func (r *PgUserRepository) GetByHandle(ctx context.Context, handle string) (*dom
 		return nil, domain.ErrUserNotFound
 	}
 	return &users[0], nil
+}
+
+// UpdateHandle changes a user's public handle. The caller must have validated the format.
+func (r *PgUserRepository) UpdateHandle(ctx context.Context, id uuid.UUID, handle string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE users SET handle = $1, updated_at = NOW() WHERE id = $2`, handle, id)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return domain.ErrHandleTaken
+		}
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return domain.ErrUserNotFound
+	}
+	return nil
 }
 
 // SetPreferredCurrency updates the user's preferred display currency (NULL for automatic).

@@ -56,7 +56,9 @@ func TestGateway_CreateCheckout(t *testing.T) {
 		assert.Equal(t, "https://pay.example/cks_1", session.CheckoutURL)
 		assert.Equal(t, "Bearer key", gotAuth)
 		assert.Equal(t, "http://localhost:4200/dashboard?order_id="+order.ID.String(), gotBody["return_url"])
-		assert.Equal(t, gotBody["metadata"], gotBody["custom_data"])
+		assert.Equal(t, "USD", gotBody["billing_currency"])
+		assert.Equal(t, false, gotBody["feature_flags"].(map[string]any)["allow_currency_selection"])
+		assert.Equal(t, false, gotBody["feature_flags"].(map[string]any)["allow_discount_code"])
 		meta := gotBody["metadata"].(map[string]any)
 		assert.Equal(t, order.ID.String(), meta["order_id"])
 		assert.Equal(t, "Track", meta["spec_title"])
@@ -251,9 +253,9 @@ func TestGateway_ParseWebhook(t *testing.T) {
 
 	t.Run("success maps to a provider-neutral confirmation", func(t *testing.T) {
 		p, h := signed(t, succeeded(map[string]any{
-			"payment_id": "pay_dodo_1",
+			"payment_id":   "pay_dodo_1",
 			"total_amount": 2500,
-			"currency": "USD",
+			"currency":     "USD",
 		}))
 		c, err := g.ParseWebhook(p, h)
 		require.NoError(t, err)
@@ -285,4 +287,49 @@ func TestGateway_ParseWebhook(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "pay_dodo_1", c.ProviderPaymentID)
 	})
+}
+
+func TestSignedDodoRefundAndTaxEvidence(t *testing.T) {
+	const secret = "test-webhook-secret"
+	gateway := NewGateway(Config{WebhookKey: secret})
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	orderID := uuid.NewString()
+	tests := []struct {
+		name    string
+		payload map[string]any
+		check   func(*domain.PaymentConfirmation)
+	}{
+		{"taxed capture", map[string]any{"type": "payment.succeeded", "data": map[string]any{
+			"payment_id": "pay_taxed", "total_amount": 1180, "tax": 180, "currency": "USD",
+			"metadata": map[string]string{"order_id": orderID},
+		}}, func(c *domain.PaymentConfirmation) {
+			assert.EqualValues(t, 1180, c.ReportedAmountMinor)
+			assert.EqualValues(t, 180, c.ReportedTaxMinor)
+		}},
+		{"external full refund", map[string]any{"type": "refund.succeeded", "data": map[string]any{
+			"payment_id": "pay_taxed", "refund_id": "ref_full", "is_partial": false, "amount": nil,
+		}}, func(c *domain.PaymentConfirmation) {
+			require.NotNil(t, c.Refund)
+			assert.True(t, c.Refund.Full)
+			assert.Equal(t, domain.RefundStatusSucceeded, c.Refund.Status)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(test.payload)
+			require.NoError(t, err)
+			eventID := uuid.NewString()
+			headers := map[string]string{
+				"webhook-id": eventID, "webhook-timestamp": timestamp,
+				"webhook-signature": "v1," + sign([]byte(secret), eventID, timestamp, body),
+			}
+			result, err := gateway.ParseWebhook(body, headers)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			test.check(result)
+			body = append(body, ' ')
+			_, err = gateway.ParseWebhook(body, headers)
+			require.ErrorIs(t, err, domain.ErrInvalidSignature)
+		})
+	}
 }

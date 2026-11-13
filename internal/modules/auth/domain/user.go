@@ -42,6 +42,7 @@ type User struct {
 	Email              string     `json:"email" db:"email"`
 	PasswordHash       string     `json:"-" db:"password_hash"`
 	Name               string     `json:"name" db:"name"`
+	Handle             string     `json:"handle" db:"handle"`
 	DisplayName        *string    `json:"display_name" db:"display_name"`
 	Role               UserRole   `json:"role" db:"role"`
 	SystemRole         SystemRole `json:"system_role" db:"system_role"`

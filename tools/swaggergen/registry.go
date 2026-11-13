@@ -8,11 +8,11 @@ import (
 	auth_app "github.com/saransh1220/blueprint-audio/internal/modules/auth/application"
 	auth_domain "github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
 	catalog_dto "github.com/saransh1220/blueprint-audio/internal/modules/catalog/interfaces/http"
+	fx_http "github.com/saransh1220/blueprint-audio/internal/modules/fx/interfaces/http"
 	notification_domain "github.com/saransh1220/blueprint-audio/internal/modules/notification/domain"
 	payment_app "github.com/saransh1220/blueprint-audio/internal/modules/payment/application"
 	payment_domain "github.com/saransh1220/blueprint-audio/internal/modules/payment/domain"
 	user_app "github.com/saransh1220/blueprint-audio/internal/modules/user/application"
-	fx_http "github.com/saransh1220/blueprint-audio/internal/modules/fx/interfaces/http"
 )
 
 // Common response schemas
@@ -70,6 +70,11 @@ type AdminUpdateSpecRequest struct {
 	BasePrice        *float64 `json:"base_price,omitempty"`
 	ProcessingStatus *string  `json:"processing_status,omitempty"`
 	IsDeleted        *bool    `json:"is_deleted,omitempty"`
+}
+
+type AdminCreateRefundRequest struct {
+	Reason string `json:"reason"`
+	Notes  string `json:"notes,omitempty"`
 }
 
 // GetEndpointsRegistry returns all route definitions mapped to real Go structs
@@ -509,6 +514,16 @@ func GetEndpointsRegistry() []EndpointDef {
 			RequestBody:  CreateOrderRequest{},
 			SuccessCode:  200,
 			ResponseBody: payment_domain.Order{},
+			HeaderParams: []ParamDef{
+				{Name: "Idempotency-Key", Type: "string", Description: "Opaque checkout intent key, up to 128 characters"},
+			},
+			Responses: map[string]Response{
+				"202": {
+					Description: "Checkout is in flight. Retry with the same key.",
+					Headers:     map[string]Header{"Retry-After": {Schema: &Property{Type: "integer"}}},
+				},
+				"409": {Description: "Idempotency key conflict, changed price, or unavailable offer"},
+			},
 		},
 		{
 			Method:      "GET",
@@ -902,6 +917,86 @@ func GetEndpointsRegistry() []EndpointDef {
 			SuccessCode: 200,
 		},
 		{
+			Method:      "POST",
+			Path:        "/admin/orders/{id}/reconcile-checkout",
+			Tags:        []string{"Admin"},
+			OperationID: "adminReconcileCheckout",
+			QueryParams: []ParamDef{{Name: "provider_reference", Type: "string", Description: "Verified Razorpay order ID or Dodo payment ID from the provider dashboard"}},
+			Summary:     "Reconcile an existing checkout using provider reads",
+			Auth:        "bearer",
+			PathParams:  []ParamDef{{Name: "id", Type: "string", Format: "uuid", Required: true}},
+			SuccessCode: 204,
+			Responses: map[string]Response{
+				"202": {Description: "Checkout outcome is still unresolved"},
+				"404": {Description: "Order not found"},
+			},
+		},
+		{
+			Method:      "POST",
+			Path:        "/admin/orders/{id}/refunds",
+			Tags:        []string{"Admin"},
+			OperationID: "adminCreateOrderRefund",
+			Summary:     "Admin issue full refund for order",
+			Description: "Initiates a provider refund and revokes licenses upon success",
+			Auth:        "bearer",
+			PathParams: []ParamDef{
+				{Name: "id", Type: "string", Format: "uuid", Required: true, Description: "Order UUID"},
+			},
+			RequestBody:  AdminCreateRefundRequest{},
+			SuccessCode:  201,
+			ResponseBody: payment_app.OrderRefundResponse{},
+			HeaderParams: []ParamDef{
+				{Name: "Idempotency-Key", Type: "string", Description: "Opaque refund intent key, up to 128 characters"},
+			},
+			Responses: map[string]Response{
+				"409": {Description: "Refund operation already exists"},
+			},
+		},
+		{
+			Method:      "GET",
+			Path:        "/admin/orders/{id}/refunds",
+			Tags:        []string{"Admin"},
+			OperationID: "adminGetOrderRefunds",
+			Summary:     "Admin list order refunds",
+			Description: "Lists all refund records for a given order",
+			Auth:        "bearer",
+			PathParams: []ParamDef{
+				{Name: "id", Type: "string", Format: "uuid", Required: true, Description: "Order UUID"},
+			},
+			SuccessCode:  200,
+			ResponseBody: []payment_domain.OrderRefund{},
+		},
+		{
+			Method:      "GET",
+			Path:        "/admin/payment-webhooks",
+			Tags:        []string{"Admin"},
+			OperationID: "adminListPaymentWebhooks",
+			Summary:     "Admin list payment webhook inbox events",
+			Description: "Lists webhook inbox events for audit and operations",
+			Auth:        "bearer",
+			QueryParams: []ParamDef{
+				{Name: "page", Type: "integer", Description: "Page number, starting at 1"},
+				{Name: "limit", Type: "integer", Description: "Page size chosen by the client"},
+				{Name: "provider", Type: "string", Description: "Provider filter (razorpay, dodo)"},
+				{Name: "status", Type: "string", Description: "Processing status (pending, processing, completed, failed, dead_letter)"},
+			},
+			SuccessCode:  200,
+			ResponseBody: []payment_domain.PaymentWebhookEvent{},
+		},
+		{
+			Method:      "POST",
+			Path:        "/admin/payment-webhooks/{id}/requeue",
+			Tags:        []string{"Admin"},
+			OperationID: "adminRequeuePaymentWebhook",
+			Summary:     "Admin requeue payment webhook event",
+			Description: "Requeues a failed or dead-lettered webhook event for processing",
+			Auth:        "bearer",
+			PathParams: []ParamDef{
+				{Name: "id", Type: "string", Format: "uuid", Required: true, Description: "Webhook Event UUID"},
+			},
+			SuccessCode: 200,
+		},
+		{
 			Method:      "GET",
 			Path:        "/admin/licenses",
 			Tags:        []string{"Admin"},
@@ -1145,5 +1240,3 @@ func RegisterKnownTypes(r *Reflector) {
 	// Register Admin types if needed
 	_ = reflect.TypeOf(admin_http.AdminHandler{})
 }
-
-

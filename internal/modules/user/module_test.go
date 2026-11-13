@@ -50,4 +50,5 @@ func TestNewModule(t *testing.T) {
 	assert.NotNil(t, m)
 	assert.NotNil(t, m.Service())
 	assert.NotNil(t, m.HTTPHandler())
+	assert.Equal(t, m, m.WithSecureCookie(true))
 }

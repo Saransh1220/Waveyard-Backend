@@ -43,12 +43,16 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: blueprint-audio_api
+    secrets:
+      - metrics_token
     ports:
       - "8080:8080"
     environment:
       # Server
       PORT: ${PORT:-8080}
       ENV: ${ENV:-development}
+      # Bearer token Prometheus uses to scrape /metrics (see prometheus service)
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
 
       # Migrations
       AUTO_MIGRATE: ${AUTO_MIGRATE:-false}
@@ -173,6 +177,8 @@ services:
   prometheus:
     image: prom/prometheus:v2.45.0
     container_name: blueprint-audio_prometheus
+    secrets:
+      - metrics_token
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
@@ -200,6 +206,11 @@ volumes:
     driver: local
   # minio_data:  # Removed - using R2
   #   driver: local
+
+secrets:
+  metrics_token:
+    # Built from the METRICS_TOKEN env var so no gitignored file is needed on QA/prod
+    environment: METRICS_TOKEN
 
 networks:
   blueprint-audio_network:

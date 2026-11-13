@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"crypto/subtle"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -23,6 +25,7 @@ import (
 type RouterConfig struct {
 	AuthHandler             *auth_http.AuthHandler
 	AuthMiddleware          *middleware.AuthMiddleWare
+	MetricsToken            string
 	BuyerCurrencyMiddleware *middleware.BuyerCurrencyMiddleware
 	SpecHandler             *catalog_http.SpecHandler
 	SpecUploadHandler       *catalog_http.SpecUploadHandler
@@ -58,7 +61,17 @@ func SetupRoutes(config RouterConfig) *http.ServeMux {
 	})
 
 	// Prometheus Metrics Endpoint
-	mux.Handle("GET /metrics", config.AuthMiddleware.Authorize(middleware.PermAdminAnalyticsRead)(promhttp.Handler()))
+	metrics := promhttp.Handler()
+	adminMetrics := config.AuthMiddleware.Authorize(middleware.PermAdminAnalyticsRead)(metrics)
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		if config.MetricsToken != "" && strings.EqualFold(scheme, "Bearer") &&
+			subtle.ConstantTimeCompare([]byte(token), []byte(config.MetricsToken)) == 1 {
+			metrics.ServeHTTP(w, r)
+			return
+		}
+		adminMetrics.ServeHTTP(w, r)
+	})
 
 	if !config.DisableAPIDocs {
 		apidocs.Register(mux)
@@ -181,6 +194,13 @@ func SetupRoutes(config RouterConfig) *http.ServeMux {
 		mux.Handle("PATCH /admin/specs/{id}", authz(middleware.PermAdminSpecsWrite)(http.HandlerFunc(config.AdminHandler.UpdateSpec)))
 		mux.Handle("DELETE /admin/specs/{id}", authz(middleware.PermAdminSpecsWrite)(http.HandlerFunc(config.AdminHandler.DeleteSpec)))
 		mux.Handle("GET /admin/orders", authz(middleware.PermAdminOrdersRead)(http.HandlerFunc(config.AdminHandler.ListOrders)))
+		if config.PaymentHandler != nil {
+			mux.Handle("POST /admin/orders/{id}/reconcile-checkout", authz(middleware.PermAdminOrdersRefund)(http.HandlerFunc(config.PaymentHandler.ReconcileOrderCheckout)))
+			mux.Handle("POST /admin/orders/{id}/refunds", authz(middleware.PermAdminOrdersRefund)(http.HandlerFunc(config.PaymentHandler.CreateRefund)))
+			mux.Handle("GET /admin/orders/{id}/refunds", authz(middleware.PermAdminOrdersRead)(http.HandlerFunc(config.PaymentHandler.GetRefunds)))
+			mux.Handle("GET /admin/payment-webhooks", authz(middleware.PermAdminAuditRead)(http.HandlerFunc(config.PaymentHandler.ListWebhookEvents)))
+			mux.Handle("POST /admin/payment-webhooks/{id}/requeue", authz(middleware.PermAdminAuditRead)(http.HandlerFunc(config.PaymentHandler.RequeueWebhookEvent)))
+		}
 		mux.Handle("GET /admin/licenses", authz(middleware.PermAdminLicensesRead)(http.HandlerFunc(config.AdminHandler.ListLicenses)))
 		mux.Handle("GET /admin/analytics/overview", authz(middleware.PermAdminAnalyticsRead)(http.HandlerFunc(config.AdminHandler.AnalyticsOverview)))
 		mux.Handle("GET /admin/audit-log", authz(middleware.PermAdminAuditRead)(http.HandlerFunc(config.AdminHandler.ListAuditLog)))

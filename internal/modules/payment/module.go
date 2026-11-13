@@ -40,6 +40,9 @@ func NewModule(
 	orderRepo := persistence.NewOrderRepository(db)
 	paymentRepo := persistence.NewPaymentRepository(db)
 	licenseRepo := persistence.NewLicenseRepository(db)
+	idempotencyRepo := persistence.NewIdempotencyRepository(db)
+	webhookRepo := persistence.NewWebhookRepository(db)
+	refundRepo := persistence.NewRefundRepository(db)
 	txRunner := persistence.NewTxRunner(db)
 
 	if gateways.Dodo.ReturnURL == "" {
@@ -59,6 +62,16 @@ func NewModule(
 	}
 
 	service := application.NewPaymentService(orderRepo, paymentRepo, licenseRepo, specFinder, userFinder, fileService, emailSender, appBaseURL, registry, txRunner)
+	if s, ok := service.(interface {
+		SetIdempotencyRepository(domain.IdempotencyRepository)
+		SetWebhookRepository(domain.WebhookEventRepository)
+		SetRefundRepository(domain.RefundRepository)
+	}); ok {
+		s.SetIdempotencyRepository(idempotencyRepo)
+		s.SetWebhookRepository(webhookRepo)
+		s.SetRefundRepository(refundRepo)
+	}
+
 	handler := paymentHttp.NewPaymentHandler(service)
 
 	return &Module{
@@ -73,8 +86,14 @@ func (m *Module) HTTPHandler() *paymentHttp.PaymentHandler {
 	return m.handler
 }
 
+func (m *Module) Service() application.PaymentService {
+	return m.service
+}
+
 func (m *Module) SetSnapshotter(snapshotter domain.ReportingRateSnapshotter) {
-	if s, ok := m.service.(interface{ SetReportingRateSnapshotter(domain.ReportingRateSnapshotter) }); ok {
+	if s, ok := m.service.(interface {
+		SetReportingRateSnapshotter(domain.ReportingRateSnapshotter)
+	}); ok {
 		s.SetReportingRateSnapshotter(snapshotter)
 	}
 }

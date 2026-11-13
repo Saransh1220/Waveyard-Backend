@@ -46,7 +46,7 @@ func TestPGSpecRepository_CreateAndListEmpty(t *testing.T) {
 	mock.ExpectCommit()
 	require.NoError(t, repo.Create(ctx, spec))
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.is_deleted = FALSE`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.is_deleted = FALSE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price", "image_url", "preview_url", "duration", "free_mp3_enabled", "total_count"}))
 	out, total, err := repo.List(ctx, domain.SpecFilter{Limit: 20, Offset: 0, MinPrice: -1})
 	require.NoError(t, err)
@@ -108,12 +108,12 @@ func TestPGSpecRepository_UpdateAndGetErrors(t *testing.T) {
 	mock.ExpectCommit()
 	require.NoError(t, repo.Update(ctx, spec))
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).
 		WithArgs(id).WillReturnError(errors.New("db"))
 	_, err := repo.GetByID(ctx, id)
 	assert.EqualError(t, err, "db")
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
 		WithArgs(id).WillReturnError(errors.New("db"))
 	_, err = repo.GetByIDSystem(ctx, id)
 	assert.EqualError(t, err, "db")
@@ -132,7 +132,7 @@ func TestPGSpecRepository_GetByIDAndListByUserID(t *testing.T) {
 		"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "producer_name",
 	}).
 		AddRow(id, userID, "Track", "beat", "WAV", 120, "C", 100, "img", "prev", 120, true, false, "Producer Name")
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).WithArgs(id).WillReturnRows(rows)
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).WithArgs(id).WillReturnRows(rows)
 	mock.ExpectQuery("SELECT \\* FROM license_options WHERE spec_id = \\$1 AND is_deleted = FALSE").WithArgs(id).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "spec_id", "license_type", "name", "price", "features", "file_types", "is_deleted"}))
 	mock.ExpectQuery("SELECT g\\.\\* FROM genres g JOIN spec_genres sg ON g.id = sg.genre_id WHERE sg.spec_id = \\$1").WithArgs(id).
@@ -140,7 +140,7 @@ func TestPGSpecRepository_GetByIDAndListByUserID(t *testing.T) {
 	_, err := repo.GetByID(ctx, id)
 	require.NoError(t, err)
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.producer_id = \$1 AND s\.is_deleted = FALSE AND s\.processing_status = 'completed' ORDER BY s\.created_at DESC LIMIT \$2 OFFSET \$3`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.producer_id = \$1 AND s\.is_deleted = FALSE AND s\.processing_status = 'completed' ORDER BY s\.created_at DESC LIMIT \$2 OFFSET \$3`).
 		WithArgs(userID, 20, 0).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price",
@@ -167,7 +167,7 @@ func TestPGSpecRepository_ListWithRelationsAndUpdateNotFound(t *testing.T) {
 		"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price", "image_url", "preview_url", "duration", "free_mp3_enabled", "total_count", "producer_name",
 	}).AddRow(specID, producerID, "Track", "beat", "WAV", 120, "C", 10.0, "img", "prev", 120, true, 1, "Producer Name")
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.is_deleted = FALSE`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.is_deleted = FALSE`).
 		WillReturnRows(mainRows)
 	mock.ExpectQuery("SELECT sg.spec_id, g.\\*").
 		WillReturnRows(sqlmock.NewRows([]string{"spec_id", "id", "name", "slug", "created_at"}).AddRow(specID, genreID, "Hip Hop", "hip-hop", time.Now()))
@@ -337,7 +337,7 @@ func TestPGSpecRepository_List_WithAllFiltersAndProducerName(t *testing.T) {
 		"image_url", "preview_url", "duration", "free_mp3_enabled", "total_count", "producer_name",
 	}).AddRow(specID, producerID, "Track", "beat", "WAV", 120, "C", 10.0, "img", "prev", 120, true, 1, "Producer Alias")
 
-	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.name as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
+	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.handle as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
 		WithArgs("beat", sqlmock.AnyArg(), sqlmock.AnyArg(), "%track%", 100, 160, 5.0, 20.0, "C", 10, 0).
 		WillReturnRows(mainRows)
 	mock.ExpectQuery("SELECT sg\\.spec_id, g\\.\\*").
@@ -381,7 +381,7 @@ func TestPGSpecRepository_ListByUserID_WithRowsAndRelations(t *testing.T) {
 		"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "total_count", "producer_name",
 	}).AddRow(specID, producerID, "Track", "beat", "WAV", 120, "C", 10.0, "img", "prev", 120, true, false, 1, "Producer Alias")
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
 		WithArgs(producerID, 10, 0).
 		WillReturnRows(mainRows)
 	mock.ExpectQuery("SELECT sg\\.spec_id, g\\.\\*").
@@ -410,7 +410,7 @@ func TestPGSpecRepository_ListByUserID_ErrorBranches(t *testing.T) {
 	specID := uuid.New()
 
 	t.Run("main query error", func(t *testing.T) {
-		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
+		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
 			WithArgs(producerID, 10, 0).
 			WillReturnError(errors.New("select failed"))
 
@@ -424,7 +424,7 @@ func TestPGSpecRepository_ListByUserID_ErrorBranches(t *testing.T) {
 			"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "total_count", "producer_name",
 		}).AddRow(specID, producerID, "Track", "beat", "WAV", 120, "C", 10.0, "img", "prev", 120, true, false, 1, "Producer Alias")
 
-		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
+		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
 			WithArgs(producerID, 10, 0).
 			WillReturnRows(mainRows)
 		mock.ExpectQuery("SELECT sg\\.spec_id, g\\.\\*").
@@ -440,7 +440,7 @@ func TestPGSpecRepository_ListByUserID_ErrorBranches(t *testing.T) {
 			"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "total_count", "producer_name",
 		}).AddRow(specID, producerID, "Track", "beat", "WAV", 120, "C", 10.0, "img", "prev", 120, true, false, 1, "Producer Alias")
 
-		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
+		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count`).
 			WithArgs(producerID, 10, 0).
 			WillReturnRows(mainRows)
 		mock.ExpectQuery("SELECT sg\\.spec_id, g\\.\\*").
@@ -467,7 +467,7 @@ func TestPGSpecRepository_GetByIDSystem_SuccessAndErrors(t *testing.T) {
 			"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "producer_name",
 		}).AddRow(id, userID, "Track", "beat", "WAV", 120, "C", 100, "img", "prev", 120, true, false, "Producer Name")
 
-		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
+		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
 			WithArgs(id).WillReturnRows(rows)
 		mock.ExpectQuery("SELECT \\* FROM license_options WHERE spec_id = \\$1 AND is_deleted = FALSE").
 			WithArgs(id).
@@ -487,7 +487,7 @@ func TestPGSpecRepository_GetByIDSystem_SuccessAndErrors(t *testing.T) {
 			"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "producer_name",
 		}).AddRow(id, userID, "Track", "beat", "WAV", 120, "C", 100, "img", "prev", 120, true, false, "Producer Name")
 
-		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
+		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
 			WithArgs(id).WillReturnRows(rows)
 		mock.ExpectQuery("SELECT \\* FROM license_options WHERE spec_id = \\$1 AND is_deleted = FALSE").
 			WithArgs(id).
@@ -503,7 +503,7 @@ func TestPGSpecRepository_GetByIDSystem_SuccessAndErrors(t *testing.T) {
 			"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "producer_name",
 		}).AddRow(id, userID, "Track", "beat", "WAV", 120, "C", 100, "img", "prev", 120, true, false, "Producer Name")
 
-		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
+		mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1`).
 			WithArgs(id).WillReturnRows(rows)
 		mock.ExpectQuery("SELECT \\* FROM license_options WHERE spec_id = \\$1 AND is_deleted = FALSE").
 			WithArgs(id).
@@ -570,7 +570,7 @@ func TestPGSpecRepository_GetByID_QueryFailures(t *testing.T) {
 		"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "producer_name",
 	}).AddRow(id, userID, "Track", "beat", "WAV", 120, "C", 100, "img", "prev", 120, true, false, "Producer Name")
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).
 		WithArgs(id).WillReturnRows(rows)
 	mock.ExpectQuery("SELECT \\* FROM license_options WHERE spec_id = \\$1 AND is_deleted = FALSE").
 		WithArgs(id).
@@ -582,7 +582,7 @@ func TestPGSpecRepository_GetByID_QueryFailures(t *testing.T) {
 		"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price",
 		"image_url", "preview_url", "duration", "free_mp3_enabled", "is_deleted", "producer_name",
 	}).AddRow(id, userID, "Track", "beat", "WAV", 120, "C", 100, "img", "prev", 120, true, false, "Producer Name")
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.name as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.id = \$1 AND s\.is_deleted = FALSE`).
 		WithArgs(id).WillReturnRows(rows2)
 	mock.ExpectQuery("SELECT \\* FROM license_options WHERE spec_id = \\$1 AND is_deleted = FALSE").
 		WithArgs(id).
@@ -602,7 +602,7 @@ func TestPGSpecRepository_List_QueryFailures(t *testing.T) {
 	specID := uuid.New()
 	producerID := uuid.New()
 
-	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.name as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
+	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.handle as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
 		WillReturnError(errors.New("list failed"))
 	_, _, err := repo.List(ctx, domain.SpecFilter{Limit: 10, Offset: 0, MinPrice: -1})
 	assert.EqualError(t, err, "list failed")
@@ -611,7 +611,7 @@ func TestPGSpecRepository_List_QueryFailures(t *testing.T) {
 		"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price",
 		"image_url", "preview_url", "duration", "free_mp3_enabled", "total_count", "producer_name",
 	}).AddRow(specID, producerID, "Track", "beat", "WAV", 120, "C", 10.0, "img", "prev", 120, true, 1, "Producer Alias")
-	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.name as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
+	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.handle as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
 		WillReturnRows(mainRows)
 	mock.ExpectQuery("SELECT sg\\.spec_id, g\\.\\*").
 		WillReturnError(errors.New("genres failed"))
@@ -622,7 +622,7 @@ func TestPGSpecRepository_List_QueryFailures(t *testing.T) {
 		"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price",
 		"image_url", "preview_url", "duration", "free_mp3_enabled", "total_count", "producer_name",
 	}).AddRow(specID, producerID, "Track", "beat", "WAV", 120, "C", 10.0, "img", "prev", 120, true, 1, "Producer Alias")
-	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.name as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
+	mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.handle as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
 		WillReturnRows(mainRows)
 	mock.ExpectQuery("SELECT sg\\.spec_id, g\\.\\*").
 		WillReturnRows(sqlmock.NewRows([]string{"spec_id", "id", "name", "slug", "created_at"}))
@@ -640,7 +640,7 @@ func TestPGSpecRepository_List_SortModes(t *testing.T) {
 
 	sorts := []string{"newest", "oldest", "price_asc", "price_desc", "bpm_asc", "bpm_desc"}
 	for _, sortMode := range sorts {
-		mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.name as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
+		mock.ExpectQuery("SELECT s\\.\\*, u\\.display_name as producer_name, u.handle as producer_handle, COUNT\\(\\*\\) OVER\\(\\) as total_count").
 			WillReturnRows(sqlmock.NewRows([]string{"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price", "image_url", "preview_url", "duration", "free_mp3_enabled", "total_count", "producer_name"}))
 		_, _, err := repo.List(ctx, domain.SpecFilter{Sort: sortMode, Limit: 10, Offset: 0, MinPrice: -1})
 		require.NoError(t, err)
