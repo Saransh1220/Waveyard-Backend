@@ -42,16 +42,12 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
-	var metricsToken string
-	if path := os.Getenv("METRICS_TOKEN_FILE"); path != "" {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			log.Fatalf("Failed to read metrics token file: %v", err)
-		}
-		metricsToken = strings.TrimSpace(string(raw))
-		if metricsToken == "" {
-			log.Fatal("Metrics token file is empty")
-		}
+	metricsToken, metricsWarning, err := loadMetricsToken(os.Getenv, os.ReadFile)
+	if err != nil {
+		log.Fatalf("Metrics token configuration invalid: %v", err)
+	}
+	if metricsWarning != "" {
+		log.Printf("WARN: %s", metricsWarning)
 	}
 
 	if cfg.Migration.AutoRun {

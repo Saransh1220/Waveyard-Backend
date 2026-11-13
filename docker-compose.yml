@@ -51,7 +51,8 @@ services:
       # Server
       PORT: ${PORT:-8080}
       ENV: ${ENV:-development}
-      METRICS_TOKEN_FILE: /run/secrets/metrics_token
+      # Bearer token Prometheus uses to scrape /metrics (see prometheus service)
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
 
       # Migrations
       AUTO_MIGRATE: ${AUTO_MIGRATE:-false}
@@ -208,7 +209,8 @@ volumes:
 
 secrets:
   metrics_token:
-    file: ./.metrics-token
+    # Built from the METRICS_TOKEN env var so no gitignored file is needed on QA/prod
+    environment: METRICS_TOKEN
 
 networks:
   blueprint-audio_network:
