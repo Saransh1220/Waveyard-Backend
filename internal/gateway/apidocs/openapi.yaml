@@ -1062,7 +1062,7 @@ paths:
         - Authentication
       operationId: googleLogin
       summary: Log in with Google ID token
-      description: Authenticates or creates a user account via a verified Google ID token
+      description: 'Authenticates or creates a user account via a verified Google ID token. In browser mode (X-Waveyard-Session: cookie), sets HttpOnly access and refresh cookies and returns 204 No Content. For legacy callers, sets an HTTP-only refresh cookie and returns a JSON access token.'
       requestBody:
         required: true
         content:
@@ -1088,7 +1088,7 @@ paths:
         - Authentication
       operationId: logoutUser
       summary: Log out
-      description: Revokes the current refresh session and clears the refresh cookie
+      description: 'Revokes the current browser/refresh session and clears authentication cookies. Returns 204 No Content in browser mode (X-Waveyard-Session: cookie) or 200 OK for legacy callers.'
       security:
         - refreshCookie: []
       responses:
@@ -1110,7 +1110,7 @@ paths:
         - Authentication
       operationId: refreshToken
       summary: Refresh access token
-      description: Rotates the refresh session sent via HTTP-only cookie and issues a new access token
+      description: 'Rotates the refresh session sent via HTTP-only cookie. In browser mode (X-Waveyard-Session: cookie), sets fresh HttpOnly access and refresh cookies and returns 204 No Content. For legacy callers, returns a JSON access token.'
       security:
         - refreshCookie: []
       responses:
@@ -1429,7 +1429,7 @@ paths:
         - Authentication
       operationId: loginUser
       summary: Log in with email and password
-      description: Authenticates the user, sets an HTTP-only refresh cookie, and returns a short-lived bearer access token
+      description: 'Authenticates the user. In browser mode (X-Waveyard-Session: cookie), sets HttpOnly access and refresh cookies and returns 204 No Content. For legacy callers, sets an HTTP-only refresh cookie and returns a JSON access token.'
       requestBody:
         required: true
         content:
@@ -2819,6 +2819,11 @@ paths:
           $ref: '#/components/responses/InternalError'
 components:
   securitySchemes:
+    accessCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-wy_access
+      description: HTTP-only cookie managed automatically by the browser for authenticated requests in browser session mode.
     bearerAuth:
       type: http
       scheme: bearer

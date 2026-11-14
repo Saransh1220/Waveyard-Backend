@@ -9,16 +9,23 @@ import (
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
 )
 
+const (
+	TokenPurposeBearer  = ""
+	TokenPurposeBrowser = "browser"
+)
+
 var (
 	ErrInvalidToken = errors.New("invalid token")
 	ErrExpiredToken = errors.New("token has expired")
 )
 
 type Claims struct {
-	UserID     uuid.UUID `json:"user_id"`
-	Email      string    `json:"email"`
-	Role       string    `json:"role"`
-	SystemRole string    `json:"system_role"`
+	UserID     uuid.UUID  `json:"user_id"`
+	Email      string     `json:"email"`
+	Role       string     `json:"role"`
+	SystemRole string     `json:"system_role"`
+	Purpose    string     `json:"prp,omitempty"`
+	SessionID  *uuid.UUID `json:"sid,omitempty"`
 	jwt.RegisteredClaims
 }
 

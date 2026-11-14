@@ -10,10 +10,17 @@ import (
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
 )
 
+const (
+	PurposeBearer  = ""
+	PurposeBrowser = "browser"
+)
+
 type CustomClaims struct {
-	UserID     uuid.UUID `json:"user_id"`
-	Role       string    `json:"role"`
-	SystemRole string    `json:"system_role"`
+	UserID     uuid.UUID  `json:"user_id"`
+	Role       string     `json:"role"`
+	SystemRole string     `json:"system_role"`
+	Purpose    string     `json:"prp,omitempty"`
+	SessionID  *uuid.UUID `json:"sid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -31,6 +38,30 @@ func GenerateToken(secret string, duration time.Duration, userID uuid.UUID, role
 		UserID:     userID,
 		Role:       role,
 		SystemRole: roleClaim,
+		Purpose:    PurposeBearer,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
+// GenerateBrowserToken creates a browser session JWT token string containing the session family ID (sid) and browser purpose (prp).
+func GenerateBrowserToken(secret string, duration time.Duration, userID uuid.UUID, sessionID uuid.UUID, role string, systemRole ...string) (string, error) {
+	roleClaim := string(domain.SystemRoleUser)
+	if len(systemRole) > 0 && systemRole[0] != "" {
+		roleClaim = systemRole[0]
+	}
+	claims := CustomClaims{
+		UserID:     userID,
+		Role:       role,
+		SystemRole: roleClaim,
+		Purpose:    PurposeBrowser,
+		SessionID:  &sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

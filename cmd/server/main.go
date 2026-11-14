@@ -158,16 +158,22 @@ func main() {
 	// instead of when the access token expires.
 	userRepo := authModule.UserRepository()
 
-	authMiddleware := gatewayMiddleware.NewAuthMiddleware(cfg.JWT.Secret).WithRoleStore(roleStore).WithAccountLookup(
-		func(ctx context.Context, id uuid.UUID) (gatewayMiddleware.AccountState, error) {
-			u, err := userRepo.GetByID(ctx, id)
-			if err != nil {
-				return gatewayMiddleware.AccountState{}, err
-			}
-			return gatewayMiddleware.AccountState{Status: u.Status, Role: u.Role, SystemRole: u.SystemRole}, nil
-		},
-		10*time.Second,
-	)
+	sessionRepo := authModule.SessionRepository()
+	authMiddleware := gatewayMiddleware.NewAuthMiddleware(cfg.JWT.Secret).
+		WithRoleStore(roleStore).
+		WithBrowserSessionLookup(func(ctx context.Context, id uuid.UUID) (bool, error) {
+			return sessionRepo.IsBrowserSessionActive(ctx, id)
+		}).
+		WithAccountLookup(
+			func(ctx context.Context, id uuid.UUID) (gatewayMiddleware.AccountState, error) {
+				u, err := userRepo.GetByID(ctx, id)
+				if err != nil {
+					return gatewayMiddleware.AccountState{}, err
+				}
+				return gatewayMiddleware.AccountState{Status: u.Status, Role: u.Role, SystemRole: u.SystemRole}, nil
+			},
+			10*time.Second,
+		)
 
 	// Favorites strict server (OpenAPI-generated contract implementation)
 	favoritesServer := openapi.NewFavoritesServer(analyticsModule.AnalyticsService)
@@ -200,7 +206,8 @@ func main() {
 	})
 
 	// 7. Apply Middleware
-	handler := gatewayMiddleware.CORSMiddleware(mux, cfg.Server.AllowedOrigins)
+	handler := gatewayMiddleware.CSRFGuardMiddleware(mux, cfg.Server.AllowedOrigins)
+	handler = gatewayMiddleware.CORSMiddleware(handler, cfg.Server.AllowedOrigins)
 	handler = gatewayMiddleware.PrometheusMiddleware(handler)
 	handler = gatewayMiddleware.RequestLoggerMiddleware(handler)
 	handler = gatewayMiddleware.TraceMiddleware(handler)

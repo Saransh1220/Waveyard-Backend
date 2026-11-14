@@ -28,6 +28,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "http://localhost:4200", cfg.Server.AllowedOrigins)
 	assert.Equal(t, "development", cfg.Server.Environment)
 	assert.False(t, cfg.Server.SecureCookies)
+	assert.True(t, cfg.Server.BrowserSessionsEnabled)
 	assert.Equal(t, "default-dev-secret", cfg.JWT.Secret)
 	assert.Equal(t, 24*time.Hour, cfg.JWT.Expiry)
 	assert.Equal(t, "localhost", cfg.Database.Host)
@@ -225,9 +226,59 @@ func TestConfig_Validate(t *testing.T) {
 		assert.ErrorContains(t, cfg.Validate(), "must match APP_BASE_URL origin")
 	})
 
+	t.Run("production mode rejects insecure cookies when browser sessions enabled", func(t *testing.T) {
+		cfg := &Config{
+			Server: ServerConfig{
+				Environment:            "production",
+				BrowserSessionsEnabled: true,
+				SecureCookies:          false,
+				AllowedOrigins:         "https://waveyard.studio",
+			},
+			AppBaseURL: "https://waveyard.studio",
+			Razorpay:   RazorpayConfig{KeyID: "rzp_live_123", KeySecret: "rzp_sec_456", WebhookSecret: "whsec_rzp_789"},
+			Dodo:       DodoPaymentsConfig{APIKey: "dodo_key_123", ProductID: "pdt_456", WebhookKey: "whsec_dodo_789", APIURL: "https://live.dodopayments.com", ReturnURL: "https://waveyard.studio/payment/return"},
+		}
+		assert.ErrorContains(t, cfg.Validate(), "SECURE_COOKIES=true")
+	})
+
+	t.Run("production mode rejects wildcard origins when browser sessions enabled", func(t *testing.T) {
+		cfg := &Config{
+			Server: ServerConfig{
+				Environment:            "production",
+				BrowserSessionsEnabled: true,
+				SecureCookies:          true,
+				AllowedOrigins:         "*",
+			},
+			AppBaseURL: "https://waveyard.studio",
+			Razorpay:   RazorpayConfig{KeyID: "rzp_live_123", KeySecret: "rzp_sec_456", WebhookSecret: "whsec_rzp_789"},
+			Dodo:       DodoPaymentsConfig{APIKey: "dodo_key_123", ProductID: "pdt_456", WebhookKey: "whsec_dodo_789", APIURL: "https://live.dodopayments.com", ReturnURL: "https://waveyard.studio/payment/return"},
+		}
+		assert.ErrorContains(t, cfg.Validate(), "cannot use wildcard ALLOWED_ORIGINS")
+	})
+
+	t.Run("production mode rejects non-https origins", func(t *testing.T) {
+		cfg := &Config{
+			Server: ServerConfig{
+				Environment:            "production",
+				BrowserSessionsEnabled: true,
+				SecureCookies:          true,
+				AllowedOrigins:         "http://evil.com",
+			},
+			AppBaseURL: "https://waveyard.studio",
+			Razorpay:   RazorpayConfig{KeyID: "rzp_live_123", KeySecret: "rzp_sec_456", WebhookSecret: "whsec_rzp_789"},
+			Dodo:       DodoPaymentsConfig{APIKey: "dodo_key_123", ProductID: "pdt_456", WebhookKey: "whsec_dodo_789", APIURL: "https://live.dodopayments.com", ReturnURL: "https://waveyard.studio/payment/return"},
+		}
+		assert.ErrorContains(t, cfg.Validate(), "must be exact https origins")
+	})
+
 	t.Run("valid production config passes", func(t *testing.T) {
 		cfg := &Config{
-			Server:     ServerConfig{Environment: "production"},
+			Server: ServerConfig{
+				Environment:            "production",
+				BrowserSessionsEnabled: true,
+				SecureCookies:          true,
+				AllowedOrigins:         "https://app.example.com",
+			},
 			AppBaseURL: "https://app.example.com",
 			Razorpay:   RazorpayConfig{KeyID: "rzp_live_123", KeySecret: "rzp_sec_456", WebhookSecret: "whsec_rzp_789"},
 			Dodo:       DodoPaymentsConfig{APIKey: "dodo_key_123", ProductID: "pdt_456", WebhookKey: "whsec_dodo_789", APIURL: "https://live.dodopayments.com", ReturnURL: "https://app.example.com/payment/return"},

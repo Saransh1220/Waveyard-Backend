@@ -34,14 +34,18 @@ type AccountState struct {
 // AccountLookup loads the current AccountState for a user.
 type AccountLookup func(ctx context.Context, userID uuid.UUID) (AccountState, error)
 
+// BrowserSessionLookup verifies whether a browser session family is currently active.
+type BrowserSessionLookup func(ctx context.Context, sessionID uuid.UUID) (bool, error)
+
 type cachedAccount struct {
 	state   AccountState
 	expires time.Time
 }
 
 type AuthMiddleWare struct {
-	jwtSecret string
-	roles     *RoleStore
+	jwtSecret     string
+	roles         *RoleStore
+	sessionLookup BrowserSessionLookup
 
 	lookup   AccountLookup
 	cacheTTL time.Duration
@@ -52,10 +56,14 @@ type AuthMiddleWare struct {
 const maxAccountCacheEntries = 10000
 
 // NewAuthMiddleware creates and returns a new instance of AuthMiddleWare.
-// It initializes the middleware with the provided JWT secret key used for token validation.
-// The jwtSecret parameter should contain a secure secret key for signing and verifying JWT tokens.
 func NewAuthMiddleware(jwtSecret string) *AuthMiddleWare {
 	return &AuthMiddleWare{jwtSecret: jwtSecret}
+}
+
+// WithBrowserSessionLookup configures database verification for browser session families.
+func (m *AuthMiddleWare) WithBrowserSessionLookup(lookup BrowserSessionLookup) *AuthMiddleWare {
+	m.sessionLookup = lookup
+	return m
 }
 
 // WithAccountLookup makes the middleware re-check the account on every
@@ -107,27 +115,100 @@ type authFailure struct {
 	body   string
 }
 
-// authenticate validates the token and returns a request context carrying the
-// caller's identity. Only Authorization headers carry access tokens.
-func (m *AuthMiddleWare) authenticate(r *http.Request) (context.Context, *authFailure) {
-	tokenStr := ""
-	authHeader := r.Header.Get("Authorization")
+func (m *AuthMiddleWare) isAllowedUnmarkedRoute(path string) bool {
+	return strings.Contains(path, "/downloads") || strings.Contains(path, "/download-free")
+}
 
-	if authHeader != "" {
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) == 2 && parts[0] == "Bearer" {
-			tokenStr = parts[1]
+// authenticate validates the token and returns a request context carrying the
+// caller's identity. Supports browser cookie session mode and legacy Bearer mode.
+func (m *AuthMiddleWare) authenticate(r *http.Request) (context.Context, *authFailure) {
+	sessionMarkers := r.Header.Values(utils.HeaderSessionMarker)
+	if len(sessionMarkers) > 1 {
+		return nil, &authFailure{http.StatusBadRequest, `{"error": "duplicate session marker header"}`}
+	}
+
+	isBrowser := false
+	if len(sessionMarkers) == 1 {
+		val := strings.TrimSpace(sessionMarkers[0])
+		if val != utils.SessionMarkerCookie {
+			return nil, &authFailure{http.StatusBadRequest, `{"error": "unknown session mode"}`}
+		}
+		isBrowser = true
+	}
+
+	tokenStr := ""
+
+	if isBrowser {
+		if r.Header.Get("Authorization") != "" {
+			return nil, &authFailure{http.StatusBadRequest, `{"error": "invalid credential combination: session marker cannot be combined with Authorization header"}`}
+		}
+
+		accessCount := 0
+		var cookieToken string
+		for _, c := range r.Cookies() {
+			if (c.Name == utils.AccessCookieNameSecure || c.Name == utils.AccessCookieNameInsecure) && c.Value != "" {
+				accessCount++
+				cookieToken = c.Value
+			}
+		}
+		if accessCount > 1 {
+			return nil, &authFailure{http.StatusBadRequest, `{"error": "duplicate access cookies"}`}
+		}
+		if cookieToken == "" {
+			return nil, &authFailure{http.StatusUnauthorized, `{"error": "missing or invalid authorization"}`}
+		}
+		tokenStr = cookieToken
+	} else {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "" {
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) == 2 && parts[0] == "Bearer" {
+				tokenStr = parts[1]
+			}
+		}
+
+		if tokenStr == "" {
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && m.isAllowedUnmarkedRoute(r.URL.Path) {
+				for _, c := range r.Cookies() {
+					if (c.Name == utils.AccessCookieNameSecure || c.Name == utils.AccessCookieNameInsecure) && c.Value != "" {
+						tokenStr = c.Value
+						isBrowser = true
+						break
+					}
+				}
+			}
+		}
+
+		if tokenStr == "" {
+			return nil, &authFailure{http.StatusUnauthorized, `{"error": "missing or invalid authorization"}`}
 		}
 	}
 
-	if tokenStr == "" {
-		return nil, &authFailure{http.StatusUnauthorized, `{"error": "missing or invalid authorization"}`}
-	}
-
-	// Note: ValidateToken will be moved to auth module's JWT provider later
 	claims, err := utils.ValidateToken(tokenStr, m.jwtSecret)
 	if err != nil {
 		return nil, &authFailure{http.StatusUnauthorized, `{"error": "invalid or expired token"}`}
+	}
+
+	if isBrowser {
+		if claims.Purpose != utils.TokenPurposeBrowser {
+			return nil, &authFailure{http.StatusUnauthorized, `{"error": "invalid token purpose"}`}
+		}
+		if claims.SessionID == nil {
+			return nil, &authFailure{http.StatusUnauthorized, `{"error": "missing session family id"}`}
+		}
+		if m.sessionLookup != nil {
+			active, err := m.sessionLookup(r.Context(), *claims.SessionID)
+			if err != nil {
+				return nil, &authFailure{http.StatusServiceUnavailable, `{"error": "unable to verify session"}`}
+			}
+			if !active {
+				return nil, &authFailure{http.StatusUnauthorized, `{"error": "session revoked"}`}
+			}
+		}
+	} else {
+		if claims.Purpose == utils.TokenPurposeBrowser {
+			return nil, &authFailure{http.StatusUnauthorized, `{"error": "invalid token purpose"}`}
+		}
 	}
 
 	role := claims.Role
@@ -147,21 +228,20 @@ func (m *AuthMiddleWare) authenticate(r *http.Request) (context.Context, *authFa
 		systemRole = string(state.SystemRole)
 	}
 
-	//  Inject Identity & Role into Context
+	expectedViewer := strings.TrimSpace(r.Header.Get(utils.HeaderExpectedViewer))
+	if expectedViewer != "" {
+		if expectedViewer == "guest" || expectedViewer != claims.UserID.String() {
+			return nil, &authFailure{http.StatusConflict, `{"error": "session changed", "code": "SESSION_CHANGED"}`}
+		}
+	}
+
 	ctx := context.WithValue(r.Context(), ContextKeyUserId, claims.UserID)
 	ctx = context.WithValue(ctx, ContextKeyRole, role)
 	ctx = context.WithValue(ctx, ContextKeySystemRole, systemRole)
 	return ctx, nil
 }
 
-// RequireAuth is a middleware function that enforces authentication on HTTP requests.
-// It validates the presence and format of a Bearer token in the Authorization header,
-// verifies the token's validity and expiration using the stored JWT secret, and injects
-// the authenticated user's ID and role into the request context for downstream handlers.
-// If authentication fails at any step, it returns a 401 Unauthorized response with a
-// descriptive error message. On success, the request is passed to the next handler with
-// the user context enriched with identity and role information for RBAC purposes.
-// Tokens in the query string are NOT accepted; they leak into logs and history.
+// RequireAuth enforces authentication on HTTP requests.
 func (m *AuthMiddleWare) RequireAuth(next http.Handler) http.Handler {
 	return m.require(next)
 }
@@ -177,21 +257,45 @@ func (m *AuthMiddleWare) require(next http.Handler) http.Handler {
 	})
 }
 
-// FlexibleAuth attempts to authenticate the user but proceeds even if no token is present.
-// If a valid token is found, it injects the UserID and Role into the context.
-// If no token, an invalid token, or a suspended account, it proceeds as a guest
-// without injecting identity.
+// FlexibleAuth attempts authentication, preserving guest behavior when no valid token is provided,
+// while enforcing viewer expectations and failing on infrastructure errors.
 func (m *AuthMiddleWare) FlexibleAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
+		expectedViewer := strings.TrimSpace(r.Header.Get(utils.HeaderExpectedViewer))
+
+		hasAuthHeader := r.Header.Get("Authorization") != ""
+		hasMarker := r.Header.Get(utils.HeaderSessionMarker) != ""
+		hasCookie := false
+		for _, c := range r.Cookies() {
+			if (c.Name == utils.AccessCookieNameSecure || c.Name == utils.AccessCookieNameInsecure) && c.Value != "" {
+				hasCookie = true
+				break
+			}
+		}
+
+		if !hasAuthHeader && !hasMarker && !hasCookie {
+			if expectedViewer != "" && expectedViewer != "guest" {
+				http.Error(w, `{"error": "session changed", "code": "SESSION_CHANGED"}`, http.StatusConflict)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
+
 		ctx, fail := m.authenticate(r)
 		if fail != nil {
+			if fail.status == http.StatusServiceUnavailable || fail.status == http.StatusConflict {
+				http.Error(w, fail.body, fail.status)
+				return
+			}
+			if expectedViewer != "" && expectedViewer != "guest" {
+				http.Error(w, `{"error": "session changed", "code": "SESSION_CHANGED"}`, http.StatusConflict)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

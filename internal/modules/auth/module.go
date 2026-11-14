@@ -27,7 +27,7 @@ func NewModule(db *sqlx.DB, jwtSecret string, jwtExpiry time.Duration, jwtRefres
 	sessionRepo := postgres.NewSessionRepository(db)
 	tokenRepo := postgres.NewEmailActionTokenRepository(db)
 	service := application.NewAuthService(userRepo, sessionRepo, tokenRepo, emailSender, appBaseURL, jwtSecret, jwtExpiry, jwtRefreshExpiry)
-	handler := auth_http.NewAuthHandler(service, fileService, googleClientID, jwtRefreshExpiry, secureCookie)
+	handler := auth_http.NewAuthHandler(service, fileService, googleClientID, jwtRefreshExpiry, secureCookie, jwtExpiry)
 
 	return &Module{
 		service:     service,
@@ -51,6 +51,11 @@ func (m *Module) UserFinder() domain.UserFinder {
 // UserRepository returns the user repository (for handlers still using old interfaces)
 func (m *Module) UserRepository() *postgres.PgUserRepository {
 	return m.userRepo
+}
+
+// SessionRepository returns the session repository
+func (m *Module) SessionRepository() domain.SessionRepository {
+	return m.sessionRepo
 }
 
 // HTTPHandler returns the HTTP handler for the auth module
