@@ -6,23 +6,25 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/saransh1220/blueprint-audio/internal/gateway/middleware"
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/application"
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
+	"github.com/saransh1220/blueprint-audio/internal/modules/auth/infrastructure/jwt"
 	"github.com/saransh1220/blueprint-audio/internal/shared/utils"
 )
 
 // AuthService defines the interface for auth operations
 type AuthService interface {
 	Register(ctx context.Context, req application.RegisterRequest) (*domain.User, error)
-	Login(ctx context.Context, req application.LoginRequest) (*application.TokenPair, error)
+	Login(ctx context.Context, req application.LoginRequest, isBrowser ...bool) (*application.TokenPair, error)
 	GetUser(ctx context.Context, id uuid.UUID) (*domain.User, error)
-	GoogleLogin(ctx context.Context, googleClientID string, req application.GoogleLoginRequest) (*application.TokenPair, error)
-	RefreshSession(ctx context.Context, refreshToken string) (*application.TokenPair, error)
-	Logout(ctx context.Context, refreshToken string) error
+	GoogleLogin(ctx context.Context, googleClientID string, req application.GoogleLoginRequest, isBrowser ...bool) (*application.TokenPair, error)
+	RefreshSession(ctx context.Context, refreshToken string, isBrowser ...bool) (*application.TokenPair, error)
+	Logout(ctx context.Context, refreshToken string, accessFamilyID ...*uuid.UUID) error
 	VerifyEmail(ctx context.Context, req application.VerifyEmailRequest) error
 	ResendVerification(ctx context.Context, req application.ResendVerificationRequest) error
 	ForgotPassword(ctx context.Context, req application.ForgotPasswordRequest) error
@@ -36,25 +38,98 @@ type FileService interface {
 }
 
 type AuthHandler struct {
-	service        AuthService
-	fileService    FileService
-	googleClientID string
-	refreshExpiry  time.Duration
-	secureCookie   bool
+	service         AuthService
+	fileService     FileService
+	googleClientID  string
+	refreshExpiry   time.Duration
+	secureCookie    bool
+	jwtExpiry       time.Duration
+	browserIssuance bool
+	jwtSecret       string
 }
 
-func NewAuthHandler(service AuthService, fileService FileService, googleClientID string, refreshExpiry time.Duration, secureCookie bool) *AuthHandler {
+func NewAuthHandler(service AuthService, fileService FileService, googleClientID string, refreshExpiry time.Duration, secureCookie bool, jwtExpiry ...time.Duration) *AuthHandler {
+	expiry := 24 * time.Hour
+	if len(jwtExpiry) > 0 && jwtExpiry[0] > 0 {
+		expiry = jwtExpiry[0]
+	}
 	return &AuthHandler{
-		service:        service,
-		fileService:    fileService,
-		googleClientID: googleClientID,
-		refreshExpiry:  refreshExpiry,
-		secureCookie:   secureCookie,
+		service:         service,
+		fileService:     fileService,
+		googleClientID:  googleClientID,
+		refreshExpiry:   refreshExpiry,
+		secureCookie:    secureCookie,
+		jwtExpiry:       expiry,
+		browserIssuance: true,
 	}
 }
 
-func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string, expires time.Time, maxAge int) {
-	utils.SetCookie(w, "refresh_token", value, "/", expires, maxAge, h.secureCookie, true)
+// ConfigureBrowserSessions applies the runtime rollout policy. Existing sessions can always log out.
+func (h *AuthHandler) ConfigureBrowserSessions(enabled bool, jwtSecret string) {
+	h.browserIssuance = enabled
+	h.jwtSecret = jwtSecret
+}
+
+func (h *AuthHandler) setAccessCookie(w http.ResponseWriter, token string, expires time.Time) {
+	name := utils.AccessCookieName(h.secureCookie)
+	maxAge := int(time.Until(expires).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	http.SetCookie(w, utils.BuildAuthCookie(name, token, expires, maxAge, h.secureCookie))
+}
+
+func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string, expires time.Time, maxAge int, isBrowser bool) {
+	if isBrowser {
+		http.SetCookie(w, utils.BuildAuthCookie(utils.RefreshCookieName, value, expires, maxAge, h.secureCookie))
+	} else {
+		http.SetCookie(w, utils.BuildCookie(utils.RefreshCookieName, value, "/", expires, maxAge, h.secureCookie, true))
+	}
+}
+
+func (h *AuthHandler) clearAuthCookies(w http.ResponseWriter) {
+	http.SetCookie(w, utils.BuildDeleteAuthCookie(utils.AccessCookieNameSecure, h.secureCookie))
+	http.SetCookie(w, utils.BuildDeleteAuthCookie(utils.AccessCookieNameInsecure, h.secureCookie))
+	http.SetCookie(w, utils.BuildDeleteAuthCookie(utils.RefreshCookieName, h.secureCookie))
+}
+
+func (h *AuthHandler) clearLegacyRefreshCookie(w http.ResponseWriter) {
+	http.SetCookie(w, utils.BuildCookie(utils.RefreshCookieName, "", "/", time.Unix(0, 0), -1, h.secureCookie, true))
+}
+
+func checkDuplicateCookies(r *http.Request) error {
+	accessCount := 0
+	refreshCount := 0
+	for _, c := range r.Cookies() {
+		if c.Name == utils.AccessCookieNameSecure || c.Name == utils.AccessCookieNameInsecure {
+			accessCount++
+		}
+		if c.Name == utils.RefreshCookieName {
+			refreshCount++
+		}
+	}
+	if accessCount > 1 {
+		return errors.New("duplicate access cookies")
+	}
+	if refreshCount > 1 {
+		return errors.New("duplicate refresh cookies")
+	}
+	return nil
+}
+
+func isBrowserSessionRequest(r *http.Request) (bool, error) {
+	values := r.Header.Values(utils.HeaderSessionMarker)
+	if len(values) == 0 {
+		return false, nil
+	}
+	if len(values) > 1 {
+		return false, errors.New("duplicate session marker header")
+	}
+	val := strings.TrimSpace(values[0])
+	if val != utils.SessionMarkerCookie {
+		return false, errors.New("unknown session mode")
+	}
+	return true, nil
 }
 
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
@@ -87,14 +162,33 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var req application.LoginRequest
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
+	if err := checkDuplicateCookies(r); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	isBrowser, err := isBrowserSessionRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+	if isBrowser && !h.browserIssuance {
+		http.Error(w, `{"error":"browser session issuance unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req application.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 
-	tokens, err := h.service.Login(r.Context(), req)
+	tokens, err := h.service.Login(r.Context(), req, isBrowser)
 	if err != nil {
 		if err == domain.ErrInvalidCredentials {
 			http.Error(w, `{"error": "invalid credentials"}`, http.StatusUnauthorized)
@@ -112,9 +206,18 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set HTTP-Only Cookie for the Refresh Token
-	h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), 0)
+	w.Header().Set("Cache-Control", "no-store")
+	if isBrowser {
+		h.setAccessCookie(w, tokens.AccessToken, time.Now().Add(h.jwtExpiry))
+		h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), int(h.refreshExpiry.Seconds()), true)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
+	// Set HTTP-Only Cookie for the Refresh Token
+	h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), 0, false)
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"token": tokens.AccessToken})
 }
@@ -150,11 +253,32 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
 }
 
 func (h *AuthHandler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := checkDuplicateCookies(r); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	isBrowser, err := isBrowserSessionRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+	if isBrowser && !h.browserIssuance {
+		http.Error(w, `{"error":"browser session issuance unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
 	var req application.GoogleLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("GoogleLogin Error: invalid request body - %v", err)
@@ -162,9 +286,7 @@ func (h *AuthHandler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("GoogleLogin Request Received: token length = %d", len(req.Token))
-
-	tokens, err := h.service.GoogleLogin(r.Context(), h.googleClientID, req)
+	tokens, err := h.service.GoogleLogin(r.Context(), h.googleClientID, req, isBrowser)
 	if err != nil {
 		log.Printf("GoogleLogin Auth Service Error: %v", err)
 		if errors.Is(err, application.ErrGoogleAuthFailed) {
@@ -175,9 +297,16 @@ func (h *AuthHandler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("GoogleLogin Success!")
+	w.Header().Set("Cache-Control", "no-store")
+	if isBrowser {
+		h.setAccessCookie(w, tokens.AccessToken, time.Now().Add(h.jwtExpiry))
+		h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), int(h.refreshExpiry.Seconds()), true)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	// Set HTTP-Only Cookie for the Refresh Token
-	h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), 0)
+	h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), 0, false)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -190,33 +319,57 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := checkDuplicateCookies(r); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	isBrowser, err := isBrowserSessionRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+	if isBrowser && !h.browserIssuance {
+		http.Error(w, `{"error":"browser session issuance unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
 	// Read refresh token from HttpOnly cookie
 	cookie, err := r.Cookie("refresh_token")
-	if err != nil {
-		// Log specific error for debugging
-		log.Printf("Refresh Token Error: Missing cookie - %v", err)
+	if err != nil || cookie.Value == "" {
 		http.Error(w, `{"error": "refresh token missing"}`, http.StatusUnauthorized)
 		return
 	}
 
-	tokens, err := h.service.RefreshSession(r.Context(), cookie.Value)
+	tokens, err := h.service.RefreshSession(r.Context(), cookie.Value, isBrowser)
 	if err != nil {
 		log.Printf("Refresh Error (Service): %v", err)
-		if errors.Is(err, application.ErrAccountSuspended) {
-			// All sessions were revoked; drop the dead cookie.
-			h.setRefreshCookie(w, "", time.Unix(0, 0), -1)
-			http.Error(w, `{"error": "account suspended"}`, http.StatusForbidden)
-			return
+		switch {
+		case errors.Is(err, application.ErrAccountSuspended):
+			http.Error(w, `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`, http.StatusForbidden)
+		case errors.Is(err, domain.ErrSessionModeMismatch):
+			http.Error(w, `{"error":"invalid session mode"}`, http.StatusUnauthorized)
+		case errors.Is(err, domain.ErrSessionNotFound), errors.Is(err, domain.ErrSessionExpired), errors.Is(err, domain.ErrSessionRevoked):
+			http.Error(w, `{"error":"invalid or expired refresh token"}`, http.StatusUnauthorized)
+		default:
+			http.Error(w, `{"error":"unable to verify session"}`, http.StatusServiceUnavailable)
 		}
-		http.Error(w, `{"error": "invalid or expired refresh token"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// Rotation: the response carries a brand-new refresh token cookie. Inside the
-	// grace window the service returns no refresh token, because another tab's
-	// response already delivered the replacement cookie; leave the cookie alone.
+	w.Header().Set("Cache-Control", "no-store")
+	if isBrowser {
+		h.setAccessCookie(w, tokens.AccessToken, time.Now().Add(h.jwtExpiry))
+		if tokens.RefreshToken != "" {
+			h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), int(h.refreshExpiry.Seconds()), true)
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Rotation: the response carries a brand-new refresh token cookie if not in grace window.
 	if tokens.RefreshToken != "" {
-		h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), 0)
+		h.setRefreshCookie(w, tokens.RefreshToken, time.Now().Add(h.refreshExpiry), 0, false)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -230,20 +383,56 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read refresh token (if it exists)
+	if err := checkDuplicateCookies(r); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	isBrowser, err := isBrowserSessionRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	var refreshToken string
 	cookie, err := r.Cookie("refresh_token")
 	if err == nil && cookie.Value != "" {
-		// Invalidate session in DB
-		err = h.service.Logout(r.Context(), cookie.Value)
-		if err != nil {
-			log.Printf("Failed to revoke session: %v", err)
-			// Continue to clear cookie even if DB update fails
+		refreshToken = cookie.Value
+	}
+
+	// Only signature-verified browser claims may revoke a family. Expired access
+	// cookies can identify a session for logout, never for normal authentication.
+	var accessFamilyID *uuid.UUID
+	if isBrowser {
+		accessCookie, err := r.Cookie(utils.AccessCookieName(h.secureCookie))
+		if err == nil {
+			accessFamilyID = jwt.BrowserSessionForLogout(accessCookie.Value, h.jwtSecret)
 		}
 	}
 
-	// Clear the refresh_token cookie
-	h.setRefreshCookie(w, "", time.Unix(0, 0), -1)
+	if refreshToken != "" || accessFamilyID != nil {
+		if err := h.service.Logout(r.Context(), refreshToken, accessFamilyID); err != nil {
+			log.Printf("Failed to revoke session: %v", err)
+			if errors.Is(err, domain.ErrSessionConflict) {
+				http.Error(w, `{"error":"session changed","code":"SESSION_CHANGED"}`, http.StatusConflict)
+				return
+			}
+			if isBrowser {
+				http.Error(w, `{"error": "failed to revoke session"}`, http.StatusServiceUnavailable)
+				return
+			}
+		}
+	}
 
+	w.Header().Set("Cache-Control", "no-store")
+	if isBrowser {
+		h.clearAuthCookies(w)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	h.clearLegacyRefreshCookie(w)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"message": "logged out successfully"})
 }

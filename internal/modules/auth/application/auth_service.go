@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -24,7 +25,7 @@ import (
 var (
 	ErrGoogleAuthFailed            = errors.New("google authentication failed")
 	ErrGoogleClientIDNotConfigured = errors.New("google oauth client id is not configured")
-	ErrAccountSuspended            = errors.New("account suspended")
+	ErrAccountSuspended            = domain.ErrAccountSuspended
 )
 
 type googleAuthError struct {
@@ -117,6 +118,8 @@ type GoogleLoginRequest struct {
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
+	IsBrowser    bool
+	FamilyID     *uuid.UUID
 }
 
 func NewAuthService(userRepo domain.UserRepository, sessionRepo domain.SessionRepository, tokenRepo domain.EmailActionTokenRepository, emailSender sharedemail.Sender, appBaseURL string, jwtSecret string, jwtExpiry time.Duration, jwtRefreshExpiry time.Duration) *AuthService {
@@ -201,7 +204,7 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest) (*domai
 	return user, nil
 }
 
-func (s *AuthService) Login(ctx context.Context, req LoginRequest) (*TokenPair, error) {
+func (s *AuthService) Login(ctx context.Context, req LoginRequest, isBrowser ...bool) (*TokenPair, error) {
 	if req.Email == "" || req.Password == "" {
 		return nil, errors.New("missing email or password")
 	}
@@ -224,7 +227,10 @@ func (s *AuthService) Login(ctx context.Context, req LoginRequest) (*TokenPair, 
 		return nil, ErrAccountSuspended
 	}
 
-	return s.generateSession(ctx, user)
+	if len(isBrowser) > 0 && isBrowser[0] {
+		return s.issueSession(ctx, user, &user.PasswordHash, true)
+	}
+	return s.issueSession(ctx, user, &user.PasswordHash, false)
 }
 
 func (s *AuthService) GetUser(ctx context.Context, id uuid.UUID) (*domain.User, error) {
@@ -235,7 +241,7 @@ func (s *AuthService) ValidateToken(tokenStr string) (*jwt.CustomClaims, error) 
 	return jwt.ValidateToken(tokenStr, s.jwtSecret)
 }
 
-func (s *AuthService) GoogleLogin(ctx context.Context, googleClientID string, req GoogleLoginRequest) (*TokenPair, error) {
+func (s *AuthService) GoogleLogin(ctx context.Context, googleClientID string, req GoogleLoginRequest, isBrowser ...bool) (*TokenPair, error) {
 	if strings.TrimSpace(googleClientID) == "" {
 		return nil, ErrGoogleClientIDNotConfigured
 	}
@@ -309,7 +315,12 @@ func (s *AuthService) GoogleLogin(ctx context.Context, googleClientID string, re
 		log.Printf("AuthService.GoogleLogin user found. account=%s user_id=%s", accountKey, user.ID)
 	}
 
-	tokens, err := s.generateSession(ctx, user)
+	var tokens *TokenPair
+	if len(isBrowser) > 0 && isBrowser[0] {
+		tokens, err = s.issueSession(ctx, user, nil, true)
+	} else {
+		tokens, err = s.issueSession(ctx, user, nil, false)
+	}
 	if err != nil {
 		log.Printf("AuthService.GoogleLogin failed to generate session. user_id=%s err=%v", user.ID, err)
 		return nil, err
@@ -388,66 +399,52 @@ func (s *AuthService) ResetPassword(ctx context.Context, req ResetPasswordReques
 		return errors.New("password must be at least 8 characters")
 	}
 
-	token, err := s.tokenRepo.Consume(ctx, req.Email, domain.TokenPurposeResetPassword, strings.TrimSpace(req.Code))
-	if err != nil {
-		return err
-	}
-
 	hashedPass, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
-	if err := s.sessionRepo.RevokeAllForUser(ctx, token.UserID); err != nil {
-		return fmt.Errorf("failed to revoke old sessions: %w", err)
+	token, err := s.tokenRepo.Consume(ctx, req.Email, domain.TokenPurposeResetPassword, strings.TrimSpace(req.Code))
+	if err != nil {
+		return err
 	}
-	if err := s.userRepo.UpdatePassword(ctx, token.UserID, string(hashedPass)); err != nil {
-		return fmt.Errorf("failed to update password: %w", err)
-	}
-	return nil
+	return s.sessionRepo.ResetPasswordAndRevokeSessions(ctx, token.UserID, string(hashedPass))
 }
 
-func (s *AuthService) generateSession(ctx context.Context, user *domain.User) (*TokenPair, error) {
-	tokens, _, err := s.issueSession(ctx, user)
-	return tokens, err
-}
-
-// issueSession creates an access token, a refresh token and the session row
-// that backs it, and returns the new session's id alongside the tokens.
-func (s *AuthService) issueSession(ctx context.Context, user *domain.User) (*TokenPair, uuid.UUID, error) {
-	accessToken, err := jwt.GenerateToken(s.jwtSecret, s.jwtExpiry, user.ID, string(user.Role), string(user.SystemRole))
-	if err != nil {
-		return nil, uuid.Nil, err
-	}
-
-	refreshTokenString, err := jwt.GenerateRefreshToken()
-	if err != nil {
-		return nil, uuid.Nil, err
-	}
-
-	expiresAt := time.Now().Add(s.jwtRefreshExpiry)
+func (s *AuthService) issueSession(ctx context.Context, user *domain.User, passwordHash *string, browser bool) (*TokenPair, error) {
 	sessionID, err := uuid.NewV7()
 	if err != nil {
-		return nil, uuid.Nil, fmt.Errorf("failed to generate uuid: %w", err)
+		return nil, err
 	}
-
+	refreshToken, err := jwt.GenerateRefreshToken()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
 	session := &domain.UserSession{
-		ID:           sessionID,
-		UserID:       user.ID,
-		RefreshToken: refreshTokenString,
-		IsRevoked:    false,
-		ExpiresAt:    expiresAt,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		ID: sessionID, UserID: user.ID, RefreshToken: refreshToken,
+		ExpiresAt: now.Add(s.jwtRefreshExpiry), CreatedAt: now, UpdatedAt: now,
 	}
-
-	if err := s.sessionRepo.Create(ctx, session); err != nil {
-		return nil, uuid.Nil, err
+	var accessToken string
+	if browser {
+		familyID, err := uuid.NewV7()
+		if err != nil {
+			return nil, err
+		}
+		session.BrowserSessionID = &familyID
+		accessToken, err = jwt.GenerateBrowserToken(s.jwtSecret, s.jwtExpiry, user.ID, familyID, string(user.Role), string(user.SystemRole))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		accessToken, err = jwt.GenerateToken(s.jwtSecret, s.jwtExpiry, user.ID, string(user.Role), string(user.SystemRole))
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	return &TokenPair{
-		AccessToken:  accessToken,
-		RefreshToken: refreshTokenString,
-	}, sessionID, nil
+	if err := s.sessionRepo.CreateAuthenticated(ctx, session, passwordHash); err != nil {
+		return nil, err
+	}
+	return &TokenPair{AccessToken: accessToken, RefreshToken: refreshToken, IsBrowser: browser, FamilyID: session.BrowserSessionID}, nil
 }
 
 // refreshGraceWindow is how long after a rotation the old refresh token may
@@ -455,96 +452,66 @@ func (s *AuthService) issueSession(ctx context.Context, user *domain.User) (*Tok
 // race arrives holding the token the winner just replaced.
 const refreshGraceWindow = 10 * time.Second
 
-var errSessionRevoked = errors.New("session has been revoked")
+var errSessionRevoked = domain.ErrSessionRevoked
 
-// RefreshSession exchanges a valid refresh token for a new access token and a
-// new refresh token. The presented refresh token is revoked (rotation), so each
-// refresh token is normally used at most once. A suspended user's sessions are
-// all revoked and the refresh is refused.
-//
-// Grace window: if the token was rotated less than refreshGraceWindow ago and
-// the session that replaced it is still active, the caller gets a fresh access
-// token only (empty RefreshToken). The browser already holds the successor
-// cookie from the winning request. Sessions revoked by logout, password reset
-// or suspension carry no rotation marker, so they never qualify.
-func (s *AuthService) RefreshSession(ctx context.Context, refreshToken string) (*TokenPair, error) {
+// RefreshSession exchanges a valid refresh token for a new access token and optionally a
+// new refresh token. When isBrowser is true, it operates in browser mode: upgrades legacy sessions
+// to a browser session family, sets sid on the issued JWT, and returns IsBrowser=true.
+// In grace window, no new refresh token is issued (RefreshToken=""), returning only access token.
+func (s *AuthService) RefreshSession(ctx context.Context, refreshToken string, isBrowser ...bool) (*TokenPair, error) {
 	if refreshToken == "" {
-		return nil, errors.New("refresh token is required")
+		return nil, domain.ErrSessionNotFound
 	}
+	isBrowserMode := len(isBrowser) > 0 && isBrowser[0]
 
-	session, err := s.sessionRepo.GetByToken(ctx, refreshToken)
+	newRefreshToken, err := jwt.GenerateRefreshToken()
 	if err != nil {
 		return nil, err
 	}
-	if session == nil {
-		return nil, errors.New("invalid refresh token")
+	newSessionID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate uuid: %w", err)
 	}
-	if session.IsRevoked && session.RotatedAt == nil {
-		return nil, errSessionRevoked
-	}
-	if time.Now().After(session.ExpiresAt) {
-		return nil, errors.New("refresh token expired")
-	}
+	newDigestBytes := sha256.Sum256([]byte(newRefreshToken))
+	newDigestHex := hex.EncodeToString(newDigestBytes[:])
+	expiresAt := time.Now().Add(s.jwtRefreshExpiry)
 
-	user, err := s.userRepo.GetByID(ctx, session.UserID)
+	rotated, userID, role, systemRole, familyID, err := s.sessionRepo.RotateSessionTx(ctx, refreshToken, newSessionID, newDigestHex, expiresAt, isBrowserMode)
 	if err != nil {
 		return nil, err
 	}
-	if user.Status == domain.UserStatusSuspended {
-		if err := s.sessionRepo.RevokeAllForUser(ctx, user.ID); err != nil {
-			log.Printf("AuthService.RefreshSession failed to revoke sessions of suspended user. user_id=%s err=%v", user.ID, err)
-		}
-		return nil, ErrAccountSuspended
-	}
 
-	if session.IsRevoked {
-		return s.refreshWithinGrace(ctx, session, user)
-	}
-
-	// Create the replacement first so a failure here leaves the old token usable.
-	tokens, newSessionID, err := s.issueSession(ctx, user)
-	if err != nil {
-		return nil, err
-	}
-	rotated, err := s.sessionRepo.MarkRotated(ctx, refreshToken, newSessionID)
-	if err != nil {
-		s.discardSession(ctx, tokens.RefreshToken)
-		return nil, fmt.Errorf("failed to rotate session: %w", err)
-	}
-	if !rotated {
-		// A concurrent refresh rotated this token between our read and write.
-		s.discardSession(ctx, tokens.RefreshToken)
-		current, err := s.sessionRepo.GetByToken(ctx, refreshToken)
+	if familyID != nil {
+		accessToken, err := jwt.GenerateBrowserToken(s.jwtSecret, s.jwtExpiry, userID, *familyID, role, systemRole)
 		if err != nil {
 			return nil, err
 		}
-		if current == nil || current.RotatedAt == nil {
-			return nil, errSessionRevoked
+		issuedRefresh := ""
+		if rotated {
+			issuedRefresh = newRefreshToken
 		}
-		return s.refreshWithinGrace(ctx, current, user)
+		return &TokenPair{
+			AccessToken:  accessToken,
+			RefreshToken: issuedRefresh,
+			IsBrowser:    true,
+			FamilyID:     familyID,
+		}, nil
 	}
 
-	return tokens, nil
-}
-
-// refreshWithinGrace mints an access token for a recently rotated session,
-// provided its successor is still alive. It never issues a refresh token.
-func (s *AuthService) refreshWithinGrace(ctx context.Context, session *domain.UserSession, user *domain.User) (*TokenPair, error) {
-	if session.RotatedAt == nil || session.ReplacedBy == nil || time.Since(*session.RotatedAt) > refreshGraceWindow {
-		return nil, errSessionRevoked
-	}
-	active, err := s.sessionRepo.IsActive(ctx, *session.ReplacedBy)
+	accessToken, err := jwt.GenerateToken(s.jwtSecret, s.jwtExpiry, userID, role, systemRole)
 	if err != nil {
 		return nil, err
 	}
-	if !active {
-		return nil, errSessionRevoked
+	issuedRefresh := ""
+	if rotated {
+		issuedRefresh = newRefreshToken
 	}
-	accessToken, err := jwt.GenerateToken(s.jwtSecret, s.jwtExpiry, user.ID, string(user.Role), string(user.SystemRole))
-	if err != nil {
-		return nil, err
-	}
-	return &TokenPair{AccessToken: accessToken}, nil
+	return &TokenPair{
+		AccessToken:  accessToken,
+		RefreshToken: issuedRefresh,
+		IsBrowser:    false,
+		FamilyID:     nil,
+	}, nil
 }
 
 // discardSession best-effort revokes a session that was created but never handed out.
@@ -554,11 +521,20 @@ func (s *AuthService) discardSession(ctx context.Context, refreshToken string) {
 	}
 }
 
-func (s *AuthService) Logout(ctx context.Context, refreshToken string) error {
-	if refreshToken == "" {
-		return nil
+func (s *AuthService) Logout(ctx context.Context, refreshToken string, accessFamilyID ...*uuid.UUID) error {
+	if refreshToken != "" {
+		return s.sessionRepo.RevokeBrowserFamilyByToken(ctx, refreshToken, accessFamilyID...)
 	}
-	return s.sessionRepo.Revoke(ctx, refreshToken)
+	if len(accessFamilyID) > 0 && accessFamilyID[0] != nil {
+		if err := s.sessionRepo.RevokeBrowserSession(ctx, *accessFamilyID[0]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *AuthService) IsBrowserSessionActive(ctx context.Context, id uuid.UUID) (bool, error) {
+	return s.sessionRepo.IsBrowserSessionActive(ctx, id)
 }
 
 func (s *AuthService) sendVerificationCode(ctx context.Context, user *domain.User) error {

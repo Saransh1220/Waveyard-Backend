@@ -22,7 +22,7 @@ func TestCORSMiddleware_PreflightRequest(t *testing.T) {
 	req := httptest.NewRequest("OPTIONS", "/orders", nil)
 	req.Header.Set("Origin", "http://localhost:4200")
 	req.Header.Set("Access-Control-Request-Method", "POST")
-	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type, idempotency-key")
+	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type, idempotency-key, x-skip-loading, x-waveyard-session, x-waveyard-expected-viewer")
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -31,7 +31,9 @@ func TestCORSMiddleware_PreflightRequest(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "http://localhost:4200", rec.Header().Get("Access-Control-Allow-Origin"))
 	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Methods"), "POST")
-	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), "Idempotency-Key")
+	for _, name := range []string{"Idempotency-Key", "X-Skip-Loading", "X-Waveyard-Session", "X-Waveyard-Expected-Viewer"} {
+		assert.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), name)
+	}
 }
 
 func TestCORSMiddleware_ActualRequest(t *testing.T) {

@@ -110,7 +110,7 @@ func TestAuthHandler_ResetPasswordBranches(t *testing.T) {
 	assert.NotContains(t, w.Body.String(), "db down", "internal errors are not echoed to the client")
 }
 
-func TestAuthHandler_RefreshFailureKeepsCookieUnlessSuspended(t *testing.T) {
+func TestAuthHandler_RefreshFailuresPreserveCookies(t *testing.T) {
 	h, service := newFlowsHandler(t, true)
 
 	refresh := func(token string) *httptest.ResponseRecorder {
@@ -121,7 +121,7 @@ func TestAuthHandler_RefreshFailureKeepsCookieUnlessSuspended(t *testing.T) {
 		return w
 	}
 
-	service.On("RefreshSession", mock.Anything, "bad").Return(nil, errors.New("invalid refresh token")).Once()
+	service.On("RefreshSession", mock.Anything, "bad").Return(nil, domain.ErrSessionNotFound).Once()
 	w := refresh("bad")
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Nil(t, findCookie(w, "refresh_token"), "a transient or unknown failure must not wipe the cookie")
@@ -129,9 +129,7 @@ func TestAuthHandler_RefreshFailureKeepsCookieUnlessSuspended(t *testing.T) {
 	service.On("RefreshSession", mock.Anything, "banned").Return(nil, application.ErrAccountSuspended).Once()
 	w = refresh("banned")
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	cleared := findCookie(w, "refresh_token")
-	require.NotNil(t, cleared)
-	assert.Equal(t, -1, cleared.MaxAge)
+	assert.Empty(t, w.Result().Cookies())
 }
 
 func TestAuthHandler_RotatedRefreshCookieAttributes(t *testing.T) {

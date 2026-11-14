@@ -18,23 +18,31 @@ func TestPgSessionRepositoryMissingAndErrorBranches(t *testing.T) {
 	repo := postgres.NewSessionRepository(db)
 	ctx := context.Background()
 
-	mockDB.ExpectQuery("SELECT \\* FROM user_sessions").WithArgs(sqlmock.AnyArg()).WillReturnError(sql.ErrNoRows)
+	mockDB.ExpectQuery("SELECT .+ FROM user_sessions").WithArgs(sqlmock.AnyArg()).WillReturnError(sql.ErrNoRows)
 	session, err := repo.GetByToken(ctx, "missing")
 	require.NoError(t, err)
 	require.Nil(t, session)
 
-	mockDB.ExpectQuery("SELECT \\* FROM user_sessions").WithArgs(sqlmock.AnyArg()).WillReturnError(errors.New("read failed"))
+	mockDB.ExpectQuery("SELECT .+ FROM user_sessions").WithArgs(sqlmock.AnyArg()).WillReturnError(errors.New("read failed"))
 	session, err = repo.GetByToken(ctx, "error")
 	require.EqualError(t, err, "read failed")
 	require.Nil(t, session)
 
 	userID := uuid.New()
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery("SELECT id FROM users").WithArgs(userID).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
+	mockDB.ExpectExec("UPDATE browser_sessions SET revoked_at = \\$1").
+		WithArgs(sqlmock.AnyArg(), userID).WillReturnResult(sqlmock.NewResult(0, 1))
 	mockDB.ExpectExec("UPDATE user_sessions SET is_revoked = true").
 		WithArgs(sqlmock.AnyArg(), userID).WillReturnResult(sqlmock.NewResult(0, 2))
+	mockDB.ExpectCommit()
 	require.NoError(t, repo.RevokeAllForUser(ctx, userID))
 
-	mockDB.ExpectExec("UPDATE user_sessions SET is_revoked = true").
+	mockDB.ExpectBegin()
+	mockDB.ExpectQuery("SELECT id FROM users").WithArgs(userID).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
+	mockDB.ExpectExec("UPDATE browser_sessions SET revoked_at = \\$1").
 		WithArgs(sqlmock.AnyArg(), userID).WillReturnError(errors.New("write failed"))
+	mockDB.ExpectRollback()
 	require.EqualError(t, repo.RevokeAllForUser(ctx, userID), "write failed")
 	require.NoError(t, mockDB.ExpectationsWereMet())
 }

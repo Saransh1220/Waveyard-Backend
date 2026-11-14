@@ -10,10 +10,17 @@ import (
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
 )
 
+const (
+	PurposeBearer  = ""
+	PurposeBrowser = "browser"
+)
+
 type CustomClaims struct {
-	UserID     uuid.UUID `json:"user_id"`
-	Role       string    `json:"role"`
-	SystemRole string    `json:"system_role"`
+	UserID     uuid.UUID  `json:"user_id"`
+	Role       string     `json:"role"`
+	SystemRole string     `json:"system_role"`
+	Purpose    string     `json:"prp,omitempty"`
+	SessionID  *uuid.UUID `json:"sid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -31,6 +38,30 @@ func GenerateToken(secret string, duration time.Duration, userID uuid.UUID, role
 		UserID:     userID,
 		Role:       role,
 		SystemRole: roleClaim,
+		Purpose:    PurposeBearer,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
+// GenerateBrowserToken creates a browser session JWT token string containing the session family ID (sid) and browser purpose (prp).
+func GenerateBrowserToken(secret string, duration time.Duration, userID uuid.UUID, sessionID uuid.UUID, role string, systemRole ...string) (string, error) {
+	roleClaim := string(domain.SystemRoleUser)
+	if len(systemRole) > 0 && systemRole[0] != "" {
+		roleClaim = systemRole[0]
+	}
+	claims := CustomClaims{
+		UserID:     userID,
+		Role:       role,
+		SystemRole: roleClaim,
+		Purpose:    PurposeBrowser,
+		SessionID:  &sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -72,4 +103,20 @@ func GenerateRefreshToken() (string, error) {
 		return "", err
 	}
 	return base64.URLEncoding.EncodeToString(b), nil
+}
+
+// BrowserSessionForLogout verifies the signature and purpose even after expiry.
+// Callers must use the result solely to revoke the session.
+func BrowserSessionForLogout(token, secret string) *uuid.UUID {
+	if token == "" || secret == "" {
+		return nil
+	}
+	var claims CustomClaims
+	_, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) {
+		return []byte(secret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithoutClaimsValidation())
+	if err != nil || claims.Purpose != PurposeBrowser || claims.SessionID == nil || *claims.SessionID == uuid.Nil {
+		return nil
+	}
+	return claims.SessionID
 }

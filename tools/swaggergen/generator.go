@@ -46,6 +46,12 @@ func BuildOpenAPIDoc(endpoints []EndpointDef, reflector *Reflector, sourceSpec *
 					Name:        "refresh_token",
 					Description: "HTTP-only cookie managed automatically by the browser across session endpoints.",
 				},
+				"accessCookie": {
+					Type:        "apiKey",
+					In:          "cookie",
+					Name:        "__Host-wy_access",
+					Description: "HTTP-only cookie managed automatically by the browser for authenticated requests in browser session mode.",
+				},
 			},
 			Schemas: reflector.Schemas,
 			Parameters: map[string]Parameter{

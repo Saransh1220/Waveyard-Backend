@@ -55,11 +55,12 @@ type EmailConfig struct {
 
 // ServerConfig holds server configuration
 type ServerConfig struct {
-	Port           string
-	AllowedOrigins string
-	Environment    string
-	SecureCookies  bool
-	APIDocsEnabled bool
+	Port                   string
+	AllowedOrigins         string
+	Environment            string
+	SecureCookies          bool
+	APIDocsEnabled         bool
+	BrowserSessionsEnabled bool
 }
 
 // JWTConfig holds JWT configuration
@@ -127,11 +128,12 @@ func Load() Config {
 
 	return Config{
 		Server: ServerConfig{
-			Port:           getEnv("PORT", "8080"),
-			AllowedOrigins: getEnv("ALLOWED_ORIGINS", "http://localhost:4200"),
-			Environment:    environment,
-			SecureCookies:  environment == "production",
-			APIDocsEnabled: getEnv("API_DOCS_ENABLED", "true") == "true",
+			Port:                   getEnv("PORT", "8080"),
+			AllowedOrigins:         getEnv("ALLOWED_ORIGINS", "http://localhost:4200"),
+			Environment:            environment,
+			SecureCookies:          environment == "production",
+			APIDocsEnabled:         getEnv("API_DOCS_ENABLED", "true") == "true",
+			BrowserSessionsEnabled: getEnv("AUTH_BROWSER_SESSIONS_ENABLED", "true") == "true",
 		},
 		Database: database.PostgresConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
@@ -235,6 +237,33 @@ func (c *Config) Validate() error {
 	}
 
 	if isProd {
+		if c.Server.BrowserSessionsEnabled {
+			if c.JWT.Secret == "" || c.JWT.Secret == "default-dev-secret" {
+				return errors.New("production browser sessions require a configured JWT_SECRET")
+			}
+			if !c.Server.SecureCookies {
+				return errors.New("production environment requires SECURE_COOKIES=true when browser sessions are enabled")
+			}
+			if c.Server.AllowedOrigins == "*" || strings.Contains(c.Server.AllowedOrigins, "*") {
+				return errors.New("production environment cannot use wildcard ALLOWED_ORIGINS when browser sessions are enabled")
+			}
+			origins := strings.Split(c.Server.AllowedOrigins, ",")
+			hasOrigin := false
+			for _, raw := range origins {
+				raw = strings.TrimSpace(raw)
+				if raw == "" {
+					continue
+				}
+				parsed, err := url.Parse(raw)
+				if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Hostname() == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(raw, "#") {
+					return fmt.Errorf("production ALLOWED_ORIGINS must be exact https origins, got: %s", raw)
+				}
+				hasOrigin = true
+			}
+			if !hasOrigin {
+				return errors.New("production browser sessions require at least one trusted origin")
+			}
+		}
 		if c.Razorpay.KeyID == "" || c.Razorpay.KeySecret == "" || c.Razorpay.WebhookSecret == "" {
 			return errors.New("production environment requires RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, and RAZORPAY_WEBHOOK_SECRET")
 		}

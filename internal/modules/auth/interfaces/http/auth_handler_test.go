@@ -31,8 +31,22 @@ func (m *MockAuthService) Register(ctx context.Context, req application.Register
 	return args.Get(0).(*domain.User), args.Error(1)
 }
 
-func (m *MockAuthService) Login(ctx context.Context, req application.LoginRequest) (*application.TokenPair, error) {
-	args := m.Called(ctx, req)
+func (m *MockAuthService) Login(ctx context.Context, req application.LoginRequest, isBrowser ...bool) (*application.TokenPair, error) {
+	b := len(isBrowser) > 0 && isBrowser[0]
+	var args mock.Arguments
+	if b {
+		args = m.Called(ctx, req, b)
+	} else {
+		for _, call := range m.ExpectedCalls {
+			if call.Method == "Login" && len(call.Arguments) == 3 {
+				args = m.Called(ctx, req, b)
+				break
+			}
+		}
+		if args == nil {
+			args = m.Called(ctx, req)
+		}
+	}
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -47,24 +61,69 @@ func (m *MockAuthService) GetUser(ctx context.Context, id uuid.UUID) (*domain.Us
 	return args.Get(0).(*domain.User), args.Error(1)
 }
 
-func (m *MockAuthService) GoogleLogin(ctx context.Context, googleClientID string, req application.GoogleLoginRequest) (*application.TokenPair, error) {
-	args := m.Called(ctx, googleClientID, req)
+func (m *MockAuthService) GoogleLogin(ctx context.Context, googleClientID string, req application.GoogleLoginRequest, isBrowser ...bool) (*application.TokenPair, error) {
+	b := len(isBrowser) > 0 && isBrowser[0]
+	var args mock.Arguments
+	if b {
+		args = m.Called(ctx, googleClientID, req, b)
+	} else {
+		for _, call := range m.ExpectedCalls {
+			if call.Method == "GoogleLogin" && len(call.Arguments) == 4 {
+				args = m.Called(ctx, googleClientID, req, b)
+				break
+			}
+		}
+		if args == nil {
+			args = m.Called(ctx, googleClientID, req)
+		}
+	}
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*application.TokenPair), args.Error(1)
 }
 
-func (m *MockAuthService) RefreshSession(ctx context.Context, refreshToken string) (*application.TokenPair, error) {
-	args := m.Called(ctx, refreshToken)
+func (m *MockAuthService) RefreshSession(ctx context.Context, refreshToken string, isBrowser ...bool) (*application.TokenPair, error) {
+	b := len(isBrowser) > 0 && isBrowser[0]
+	var args mock.Arguments
+	if b {
+		args = m.Called(ctx, refreshToken, b)
+	} else {
+		for _, call := range m.ExpectedCalls {
+			if call.Method == "RefreshSession" && len(call.Arguments) == 3 {
+				args = m.Called(ctx, refreshToken, b)
+				break
+			}
+		}
+		if args == nil {
+			args = m.Called(ctx, refreshToken)
+		}
+	}
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*application.TokenPair), args.Error(1)
 }
 
-func (m *MockAuthService) Logout(ctx context.Context, refreshToken string) error {
-	args := m.Called(ctx, refreshToken)
+func (m *MockAuthService) Logout(ctx context.Context, refreshToken string, accessFamilyID ...*uuid.UUID) error {
+	var fam *uuid.UUID
+	if len(accessFamilyID) > 0 {
+		fam = accessFamilyID[0]
+	}
+	var args mock.Arguments
+	if fam != nil {
+		args = m.Called(ctx, refreshToken, fam)
+	} else {
+		for _, call := range m.ExpectedCalls {
+			if call.Method == "Logout" && len(call.Arguments) == 3 {
+				args = m.Called(ctx, refreshToken, fam)
+				break
+			}
+		}
+		if args == nil {
+			args = m.Called(ctx, refreshToken)
+		}
+	}
 	return args.Error(0)
 }
 

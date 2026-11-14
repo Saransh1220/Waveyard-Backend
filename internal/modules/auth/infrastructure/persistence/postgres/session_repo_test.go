@@ -43,9 +43,9 @@ func TestPgSessionRepository_UsesTokenDigestForLookupAndRevoke(t *testing.T) {
 	sessionID := uuid.New()
 	userID := uuid.New()
 
-	rows := sqlmock.NewRows([]string{"id", "user_id", "refresh_token_digest", "is_revoked", "expires_at", "created_at", "updated_at"}).
-		AddRow(sessionID, userID, "digest", false, time.Now().Add(time.Hour), time.Now(), time.Now())
-	mock.ExpectQuery("SELECT \\* FROM user_sessions WHERE refresh_token_digest = \\$1").
+	rows := sqlmock.NewRows([]string{"id", "user_id", "refresh_token_digest", "is_revoked", "expires_at", "created_at", "updated_at", "rotated_at", "replaced_by", "browser_session_id"}).
+		AddRow(sessionID, userID, "digest", false, time.Now().Add(time.Hour), time.Now(), time.Now(), nil, nil, nil)
+	mock.ExpectQuery("SELECT .+ FROM user_sessions WHERE refresh_token_digest = \\$1").
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(rows)
 

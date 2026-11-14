@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
+	"github.com/saransh1220/blueprint-audio/internal/modules/auth/infrastructure/jwt"
 	sharedemail "github.com/saransh1220/blueprint-audio/internal/shared/infrastructure/email"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -171,30 +172,17 @@ func TestResetPasswordBranches(t *testing.T) {
 		assert.ErrorIs(t, svc.ResetPassword(ctx, valid), domain.ErrInvalidOrExpiredCode)
 	})
 
-	t.Run("revoke failure aborts before the password changes", func(t *testing.T) {
+	t.Run("transaction failure is returned", func(t *testing.T) {
 		svc, _, sessions, tokens, _ := newAuthServiceHarness(t)
 		tokens.On("Consume", ctx, "a@a.com", domain.TokenPurposeResetPassword, "654321").Return(&domain.EmailActionToken{UserID: userID}, nil).Once()
-		sessions.On("RevokeAllForUser", ctx, userID).Return(errors.New("revoke failed")).Once()
-		err := svc.ResetPassword(ctx, valid)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to revoke old sessions")
-	})
-
-	t.Run("update failure", func(t *testing.T) {
-		svc, users, sessions, tokens, _ := newAuthServiceHarness(t)
-		tokens.On("Consume", ctx, "a@a.com", domain.TokenPurposeResetPassword, "654321").Return(&domain.EmailActionToken{UserID: userID}, nil).Once()
-		sessions.On("RevokeAllForUser", ctx, userID).Return(nil).Once()
-		users.On("UpdatePassword", ctx, userID, mock.Anything).Return(errors.New("write failed")).Once()
-		err := svc.ResetPassword(ctx, valid)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to update password")
+		sessions.On("ResetPasswordAndRevokeSessions", ctx, userID, mock.Anything).Return(errors.New("write failed")).Once()
+		assert.EqualError(t, svc.ResetPassword(ctx, valid), "write failed")
 	})
 
 	t.Run("stores a bcrypt hash of the new password", func(t *testing.T) {
-		svc, users, sessions, tokens, _ := newAuthServiceHarness(t)
+		svc, _, sessions, tokens, _ := newAuthServiceHarness(t)
 		tokens.On("Consume", ctx, "a@a.com", domain.TokenPurposeResetPassword, "654321").Return(&domain.EmailActionToken{UserID: userID}, nil).Once()
-		sessions.On("RevokeAllForUser", ctx, userID).Return(nil).Once()
-		users.On("UpdatePassword", ctx, userID, mock.MatchedBy(func(hash string) bool {
+		sessions.On("ResetPasswordAndRevokeSessions", ctx, userID, mock.MatchedBy(func(hash string) bool {
 			return bcrypt.CompareHashAndPassword([]byte(hash), []byte("longenough1")) == nil
 		})).Return(nil).Once()
 		require.NoError(t, svc.ResetPassword(ctx, valid))
@@ -250,7 +238,7 @@ func TestRegisterAndLoginAdditionalBranches(t *testing.T) {
 		hash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
 		require.NoError(t, err)
 		users.On("GetByEmail", ctx, "a@a.com").Return(&domain.User{ID: uuid.New(), PasswordHash: string(hash), EmailVerified: true, Status: domain.UserStatusActive}, nil).Once()
-		sessions.On("Create", ctx, mock.Anything).Return(errors.New("insert failed")).Once()
+		sessions.On("CreateAuthenticated", ctx, mock.Anything, mock.Anything).Return(errors.New("insert failed")).Once()
 		_, err = svc.Login(ctx, LoginRequest{Email: "a@a.com", Password: "password123"})
 		assert.EqualError(t, err, "insert failed")
 	})
@@ -259,121 +247,87 @@ func TestRegisterAndLoginAdditionalBranches(t *testing.T) {
 func TestRefreshSessionRotationFailures(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
-	successor := uuid.New()
-	activeUser := &domain.User{ID: userID, Role: domain.RoleArtist, SystemRole: domain.SystemRoleUser, Status: domain.UserStatusActive}
-	live := func() *domain.UserSession {
-		return &domain.UserSession{UserID: userID, ExpiresAt: time.Now().Add(time.Hour)}
-	}
-	rotatedAt := func(ago time.Duration) *time.Time {
-		at := time.Now().Add(-ago)
-		return &at
-	}
+	familyID := uuid.New()
 
-	t.Run("replacement session cannot be created", func(t *testing.T) {
-		svc, users, sessions, _, _ := newAuthServiceHarness(t)
-		sessions.On("GetByToken", ctx, "old").Return(live(), nil).Once()
-		users.On("GetByID", ctx, userID).Return(activeUser, nil).Once()
-		sessions.On("Create", ctx, mock.Anything).Return(errors.New("insert failed")).Once()
-		_, err := svc.RefreshSession(ctx, "old")
-		assert.EqualError(t, err, "insert failed")
-	})
-
-	t.Run("rotation write failure discards the unused session even if that fails", func(t *testing.T) {
-		svc, users, sessions, _, _ := newAuthServiceHarness(t)
-		sessions.On("GetByToken", ctx, "old").Return(live(), nil).Once()
-		users.On("GetByID", ctx, userID).Return(activeUser, nil).Once()
-		sessions.On("Create", ctx, mock.Anything).Return(nil).Once()
-		sessions.On("MarkRotated", ctx, "old", mock.Anything).Return(false, errors.New("write failed")).Once()
-		sessions.On("Revoke", ctx, mock.Anything).Return(errors.New("revoke failed")).Once()
+	t.Run("rotation db write failure returns error", func(t *testing.T) {
+		svc, _, sessions, _, _ := newAuthServiceHarness(t)
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
+			Return(false, uuid.Nil, "", "", nil, errors.New("write failed")).Once()
 		_, err := svc.RefreshSession(ctx, "old")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to rotate session")
+		assert.EqualError(t, err, "write failed")
 	})
 
-	t.Run("lost race and the re-read fails", func(t *testing.T) {
-		svc, users, sessions, _, _ := newAuthServiceHarness(t)
-		sessions.On("GetByToken", ctx, "old").Return(live(), nil).Once()
-		users.On("GetByID", ctx, userID).Return(activeUser, nil).Once()
-		sessions.On("Create", ctx, mock.Anything).Return(nil).Once()
-		sessions.On("MarkRotated", ctx, "old", mock.Anything).Return(false, nil).Once()
-		sessions.On("Revoke", ctx, mock.Anything).Return(nil).Once()
-		sessions.On("GetByToken", ctx, "old").Return(nil, errors.New("read failed")).Once()
+	t.Run("session not found", func(t *testing.T) {
+		svc, _, sessions, _, _ := newAuthServiceHarness(t)
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
+			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionNotFound).Once()
 		_, err := svc.RefreshSession(ctx, "old")
-		assert.EqualError(t, err, "read failed")
+		assert.ErrorIs(t, err, domain.ErrSessionNotFound)
 	})
 
-	t.Run("lost race but the session is gone or was not rotated", func(t *testing.T) {
-		for name, reread := range map[string]*domain.UserSession{
-			"deleted":                nil,
-			"revoked by logout":      {UserID: userID, IsRevoked: true, ExpiresAt: time.Now().Add(time.Hour)},
-			"revoked without marker": {UserID: userID, IsRevoked: true},
-		} {
-			t.Run(name, func(t *testing.T) {
-				svc, users, sessions, _, _ := newAuthServiceHarness(t)
-				sessions.On("GetByToken", ctx, "old").Return(live(), nil).Once()
-				users.On("GetByID", ctx, userID).Return(activeUser, nil).Once()
-				sessions.On("Create", ctx, mock.Anything).Return(nil).Once()
-				sessions.On("MarkRotated", ctx, "old", mock.Anything).Return(false, nil).Once()
-				sessions.On("Revoke", ctx, mock.Anything).Return(nil).Once()
-				if reread == nil {
-					sessions.On("GetByToken", ctx, "old").Return(nil, nil).Once()
-				} else {
-					sessions.On("GetByToken", ctx, "old").Return(reread, nil).Once()
-				}
-				_, err := svc.RefreshSession(ctx, "old")
-				assert.EqualError(t, err, "session has been revoked")
-			})
-		}
-	})
-
-	t.Run("grace check cannot read the successor", func(t *testing.T) {
-		svc, users, sessions, _, _ := newAuthServiceHarness(t)
-		revoked := &domain.UserSession{UserID: userID, IsRevoked: true, RotatedAt: rotatedAt(time.Second), ReplacedBy: &successor, ExpiresAt: time.Now().Add(time.Hour)}
-		sessions.On("GetByToken", ctx, "old").Return(revoked, nil).Once()
-		users.On("GetByID", ctx, userID).Return(activeUser, nil).Once()
-		sessions.On("IsActive", ctx, successor).Return(false, errors.New("read failed")).Once()
+	t.Run("session expired", func(t *testing.T) {
+		svc, _, sessions, _, _ := newAuthServiceHarness(t)
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
+			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionExpired).Once()
 		_, err := svc.RefreshSession(ctx, "old")
-		assert.EqualError(t, err, "read failed")
+		assert.ErrorIs(t, err, domain.ErrSessionExpired)
 	})
 
-	t.Run("a rotation marker without a successor is not enough", func(t *testing.T) {
-		svc, users, sessions, _, _ := newAuthServiceHarness(t)
-		revoked := &domain.UserSession{UserID: userID, IsRevoked: true, RotatedAt: rotatedAt(time.Second), ExpiresAt: time.Now().Add(time.Hour)}
-		sessions.On("GetByToken", ctx, "old").Return(revoked, nil).Once()
-		users.On("GetByID", ctx, userID).Return(activeUser, nil).Once()
+	t.Run("session revoked", func(t *testing.T) {
+		svc, _, sessions, _, _ := newAuthServiceHarness(t)
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
+			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionRevoked).Once()
 		_, err := svc.RefreshSession(ctx, "old")
 		assert.EqualError(t, err, "session has been revoked")
 	})
 
-	t.Run("expired rotated session is refused before the grace check", func(t *testing.T) {
+	t.Run("suspended user", func(t *testing.T) {
 		svc, _, sessions, _, _ := newAuthServiceHarness(t)
-		revoked := &domain.UserSession{UserID: userID, IsRevoked: true, RotatedAt: rotatedAt(time.Second), ReplacedBy: &successor, ExpiresAt: time.Now().Add(-time.Minute)}
-		sessions.On("GetByToken", ctx, "old").Return(revoked, nil).Once()
-		_, err := svc.RefreshSession(ctx, "old")
-		assert.EqualError(t, err, "refresh token expired")
-	})
-
-	t.Run("suspended user: revoke failure is only logged", func(t *testing.T) {
-		svc, users, sessions, _, _ := newAuthServiceHarness(t)
-		sessions.On("GetByToken", ctx, "old").Return(live(), nil).Once()
-		users.On("GetByID", ctx, userID).Return(&domain.User{ID: userID, Status: domain.UserStatusSuspended}, nil).Once()
-		sessions.On("RevokeAllForUser", ctx, userID).Return(errors.New("revoke failed")).Once()
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
+			Return(false, uuid.Nil, "", "", nil, domain.ErrAccountSuspended).Once()
 		_, err := svc.RefreshSession(ctx, "old")
 		assert.ErrorIs(t, err, ErrAccountSuspended)
 	})
 
-	t.Run("grace refresh issues an access token that names the user", func(t *testing.T) {
-		svc, users, sessions, _, _ := newAuthServiceHarness(t)
-		revoked := &domain.UserSession{UserID: userID, IsRevoked: true, RotatedAt: rotatedAt(time.Second), ReplacedBy: &successor, ExpiresAt: time.Now().Add(time.Hour)}
-		sessions.On("GetByToken", ctx, "old").Return(revoked, nil).Once()
-		users.On("GetByID", ctx, userID).Return(activeUser, nil).Once()
-		sessions.On("IsActive", ctx, successor).Return(true, nil).Once()
+	t.Run("mode mismatch: legacy refresh on cookie-mode session", func(t *testing.T) {
+		svc, _, sessions, _, _ := newAuthServiceHarness(t)
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
+			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionModeMismatch).Once()
+		_, err := svc.RefreshSession(ctx, "old")
+		assert.ErrorIs(t, err, domain.ErrSessionModeMismatch)
+	})
+
+	t.Run("grace refresh issues access token only", func(t *testing.T) {
+		svc, _, sessions, _, _ := newAuthServiceHarness(t)
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
+			Return(false, userID, string(domain.RoleArtist), string(domain.SystemRoleUser), nil, nil).Once()
 		tokens, err := svc.RefreshSession(ctx, "old")
 		require.NoError(t, err)
+		assert.NotEmpty(t, tokens.AccessToken)
+		assert.Empty(t, tokens.RefreshToken)
 		claims, err := svc.ValidateToken(tokens.AccessToken)
 		require.NoError(t, err)
 		assert.Equal(t, userID, claims.UserID)
 		assert.Equal(t, string(domain.RoleArtist), claims.Role)
+	})
+
+	t.Run("browser mode refresh issues browser token with sid", func(t *testing.T) {
+		svc, _, sessions, _, _ := newAuthServiceHarness(t)
+		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, true).
+			Return(true, userID, string(domain.RoleProducer), string(domain.SystemRoleUser), &familyID, nil).Once()
+		tokens, err := svc.RefreshSession(ctx, "old", true)
+		require.NoError(t, err)
+		assert.NotEmpty(t, tokens.AccessToken)
+		assert.NotEmpty(t, tokens.RefreshToken)
+		assert.True(t, tokens.IsBrowser)
+		assert.Equal(t, &familyID, tokens.FamilyID)
+		claims, err := svc.ValidateToken(tokens.AccessToken)
+		require.NoError(t, err)
+		assert.Equal(t, userID, claims.UserID)
+		assert.Equal(t, string(domain.RoleProducer), claims.Role)
+		assert.Equal(t, jwt.PurposeBrowser, claims.Purpose)
+		assert.Equal(t, &familyID, claims.SessionID)
 	})
 }
 

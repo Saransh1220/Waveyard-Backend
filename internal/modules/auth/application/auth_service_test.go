@@ -72,6 +72,12 @@ type mockSessionRepository struct{ mock.Mock }
 func (m *mockSessionRepository) Create(ctx context.Context, session *domain.UserSession) error {
 	return m.Called(ctx, session).Error(0)
 }
+func (m *mockSessionRepository) CreateAuthenticated(ctx context.Context, session *domain.UserSession, passwordHash *string) error {
+	return m.Called(ctx, session, passwordHash).Error(0)
+}
+func (m *mockSessionRepository) ResetPasswordAndRevokeSessions(ctx context.Context, userID uuid.UUID, passwordHash string) error {
+	return m.Called(ctx, userID, passwordHash).Error(0)
+}
 func (m *mockSessionRepository) GetByToken(ctx context.Context, token string) (*domain.UserSession, error) {
 	args := m.Called(ctx, token)
 	if args.Get(0) == nil {
@@ -92,6 +98,34 @@ func (m *mockSessionRepository) MarkRotated(ctx context.Context, token string, s
 func (m *mockSessionRepository) IsActive(ctx context.Context, id uuid.UUID) (bool, error) {
 	args := m.Called(ctx, id)
 	return args.Bool(0), args.Error(1)
+}
+func (m *mockSessionRepository) CreateBrowserSession(ctx context.Context, session *domain.BrowserSession) error {
+	return m.Called(ctx, session).Error(0)
+}
+func (m *mockSessionRepository) GetBrowserSession(ctx context.Context, id uuid.UUID) (*domain.BrowserSession, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.BrowserSession), args.Error(1)
+}
+func (m *mockSessionRepository) IsBrowserSessionActive(ctx context.Context, id uuid.UUID) (bool, error) {
+	args := m.Called(ctx, id)
+	return args.Bool(0), args.Error(1)
+}
+func (m *mockSessionRepository) RevokeBrowserSession(ctx context.Context, id uuid.UUID) error {
+	return m.Called(ctx, id).Error(0)
+}
+func (m *mockSessionRepository) RevokeBrowserFamilyByToken(ctx context.Context, token string, expectedFamily ...*uuid.UUID) error {
+	return m.Called(ctx, token).Error(0)
+}
+func (m *mockSessionRepository) RotateSessionTx(ctx context.Context, refreshToken string, newSessionID uuid.UUID, newRefreshTokenDigest string, expiresAt time.Time, isBrowserMode bool) (bool, uuid.UUID, string, string, *uuid.UUID, error) {
+	args := m.Called(ctx, refreshToken, newSessionID, newRefreshTokenDigest, expiresAt, isBrowserMode)
+	var famID *uuid.UUID
+	if args.Get(4) != nil {
+		famID = args.Get(4).(*uuid.UUID)
+	}
+	return args.Bool(0), args.Get(1).(uuid.UUID), args.String(2), args.String(3), famID, args.Error(5)
 }
 
 type mockTokenRepository struct{ mock.Mock }
@@ -274,7 +308,7 @@ func TestLogin(t *testing.T) {
 		assert.NoError(t, err)
 		user := &domain.User{ID: uuid.New(), Email: "a@a.com", PasswordHash: string(hash), Role: domain.RoleProducer, EmailVerified: true}
 		repo.On("GetByEmail", ctx, "a@a.com").Return(user, nil).Once()
-		sessionRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.UserSession")).
+		sessionRepo.On("CreateAuthenticated", mock.Anything, mock.AnythingOfType("*domain.UserSession"), mock.Anything).
 			Run(func(args mock.Arguments) {
 				session := args.Get(1).(*domain.UserSession)
 				assert.Equal(t, uuid.Version(7), session.ID.Version())
@@ -317,12 +351,11 @@ func TestVerifyEmailAndResetPassword(t *testing.T) {
 	})
 
 	t.Run("reset password", func(t *testing.T) {
-		svc, repo, sessionRepo, tokenRepo, _ := newAuthServiceHarness(t)
+		svc, _, sessionRepo, tokenRepo, _ := newAuthServiceHarness(t)
 		userID := uuid.New()
 		tokenRepo.On("Consume", ctx, "user@example.com", domain.TokenPurposeResetPassword, "654321").
 			Return(&domain.EmailActionToken{UserID: userID}, nil).Once()
-		repo.On("UpdatePassword", ctx, userID, mock.AnythingOfType("string")).Return(nil).Once()
-		sessionRepo.On("RevokeAllForUser", ctx, userID).Return(nil).Once()
+		sessionRepo.On("ResetPasswordAndRevokeSessions", ctx, userID, mock.AnythingOfType("string")).Return(nil).Once()
 
 		err := svc.ResetPassword(ctx, ResetPasswordRequest{Email: "user@example.com", Code: "654321", NewPassword: "newpassword123"})
 		assert.NoError(t, err)
@@ -410,7 +443,7 @@ func TestGoogleLogin_CreateUserError(t *testing.T) {
 
 func TestGoogleLogin_CreateUserSuccess(t *testing.T) {
 	svc, repo, sessionRepo, _, _ := newAuthServiceHarness(t)
-	sessionRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.UserSession")).
+	sessionRepo.On("CreateAuthenticated", mock.Anything, mock.AnythingOfType("*domain.UserSession"), mock.Anything).
 		Run(func(args mock.Arguments) {
 			session := args.Get(1).(*domain.UserSession)
 			assert.Equal(t, uuid.Version(7), session.ID.Version())
@@ -435,7 +468,7 @@ func TestGoogleLogin_CreateUserSuccess(t *testing.T) {
 
 func TestGoogleLogin_ExistingUserSuccess(t *testing.T) {
 	svc, repo, sessionRepo, _, _ := newAuthServiceHarness(t)
-	sessionRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.UserSession")).
+	sessionRepo.On("CreateAuthenticated", mock.Anything, mock.AnythingOfType("*domain.UserSession"), mock.Anything).
 		Run(func(args mock.Arguments) {
 			session := args.Get(1).(*domain.UserSession)
 			assert.Equal(t, uuid.Version(7), session.ID.Version())

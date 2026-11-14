@@ -136,10 +136,7 @@ func TestAuthHandler_RefreshAndLogout(t *testing.T) {
 	w = httptest.NewRecorder()
 	h.Refresh(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	cleared := w.Result().Cookies()
-	if assert.NotEmpty(t, cleared) {
-		assert.Equal(t, -1, cleared[0].MaxAge)
-	}
+	assert.Empty(t, w.Result().Cookies())
 	service.On("Logout", mock.Anything, "old").Return(nil).Once()
 	req = httptest.NewRequest(http.MethodPost, "/logout", nil)
 	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "old"})

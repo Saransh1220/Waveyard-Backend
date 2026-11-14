@@ -1,43 +1,56 @@
 # Auth: Refresh Token & Logout — Architecture Guide
 
-This document explains the complete design of the **refresh token** and **logout** system implemented across the Go backend and Angular frontend.
+This document explains the complete design of authentication, refresh tokens, and session management implemented across the Go backend and Angular frontend.
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Backend Architecture (Go)](#backend-architecture-go)
+2. [Browser Authentication Mode (Secure HttpOnly Cookies)](#browser-authentication-mode-secure-httponly-cookies)
+3. [Backend Architecture (Go)](#backend-architecture-go)
    - [Configuration](#configuration)
    - [Domain & Repository](#domain--repository)
-   - [Application Service](#application-service)
+   - [Transactional Rotation & Session Families](#transactional-rotation--session-families)
+   - [Gateway Middleware: CORS, CSRF & Auth](#gateway-middleware-cors-csrf--auth)
    - [HTTP Handler](#http-handler)
-   - [Module & Dependency Injection](#module--dependency-injection)
-   - [Router & Server](#router--server)
-3. [Frontend Architecture (Angular)](#frontend-architecture-angular)
-   - [API Request Classes](#api-request-classes)
-   - [AuthService](#authservice)
-   - [HTTP Interceptor](#http-interceptor)
-4. [Full Flow Diagrams](#full-flow-diagrams)
-   - [Login Flow](#login-flow)
-   - [API Call with Expired Access Token](#api-call-with-expired-access-token)
-   - [App Startup (Silent Refresh)](#app-startup-silent-refresh)
-   - [Logout Flow](#logout-flow)
-5. [Security Design Decisions](#security-design-decisions)
-6. [Environment Variables](#environment-variables)
+4. [Frontend Architecture (Angular)](#frontend-architecture-angular)
+   - [Session Hydration & State Management](#session-hydration--state-management)
+   - [HTTP Interceptors & Expected Viewer](#http-interceptors--expected-viewer)
+   - [Token Refresh Service & Queuing](#token-refresh-service--queuing)
+5. [Full Flow Diagrams](#full-flow-diagrams)
+   - [Browser Login Flow](#browser-login-flow)
+   - [API Call with Expired Cookie (Silent Refresh Replay)](#api-call-with-expired-cookie-silent-refresh-replay)
+   - [App Startup (GET /me Bootstrap)](#app-startup-get-me-bootstrap)
+   - [Logout Flow & Family Revocation](#logout-flow--family-revocation)
+6. [Security Design Decisions](#security-design-decisions)
+7. [Environment Variables](#environment-variables)
 
 ---
 
 ## Overview
 
-The system uses a **dual-token strategy**:
+The application supports modern **Browser Session Mode** (secure HttpOnly cookies) alongside backward-compatible legacy Bearer authorization:
 
-| Token | Storage | Lifetime | Purpose |
-|---|---|---|---|
-| **Access Token (JWT)** | `localStorage` (client) | Short (e.g., 24h) | Sent in `Authorization: Bearer` header to authenticate API calls |
-| **Refresh Token** | `HttpOnly` cookie | Long (e.g., 30 days) | Sent automatically by browser to `/auth/refresh` to get a new access token |
+| Area | Browser Session Mode (`X-Waveyard-Session: cookie`) | Legacy Mode (Supported Callers) |
+|---|---|---|
+| **Access Token** | `__Host-wy_access` (HTTPS) / `wy_access` (`HttpOnly`, `SameSite=Lax`, `Path=/`) | `Authorization: Bearer <jwt>` |
+| **Refresh Token** | `refresh_token` (`HttpOnly`, `SameSite=Lax`, `Path=/`) | `refresh_token` (`HttpOnly`, `Path=/`) |
+| **Session Lifetime** | Short-lived access JWT (e.g., 15m), refresh family (e.g., 30d) | Short-lived access JWT, refresh session |
+| **JS Access** | **Zero access** — neither access nor refresh token is exposed to JavaScript | Access token returned in JSON body |
+| **CSRF Defense** | Gateway CSRF guard requires exact trusted `Origin` on mutations | Bearer authorization isolated from cookies |
+| **Multi-Tab Sync** | `X-Waveyard-Expected-Viewer` header enforces 409 `SESSION_CHANGED` | Client storage synchronization |
 
-The refresh token is **never accessible by JavaScript** (HttpOnly), protecting it from XSS attacks.
+---
+
+## Browser Authentication Mode (Secure HttpOnly Cookies)
+
+In browser mode, Angular never receives a JWT in the response body or writes one to browser storage (`localStorage` or `sessionStorage`).
+- Browser calls declare their mode using `X-Waveyard-Session: cookie`.
+- Authentication responses (`/login`, `/auth/google`, `/auth/refresh`) return **204 No Content** with `Cache-Control: no-store` and `Set-Cookie` headers.
+- Browser logout returns **204 No Content** after confirmed DB revocation of the session family.
+- Protected requests carry the HttpOnly access cookie automatically.
+- Every browser mutation is guarded against CSRF by checking the exact `Origin` against the trusted allowlist.
 
 ---
 
