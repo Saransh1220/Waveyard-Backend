@@ -120,3 +120,29 @@ func TestCSRFGuardMiddleware_UnmarkedWithBrowserCredentials(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Contains(t, rec.Body.String(), "unmarked mutation with browser credentials")
 }
+
+func TestLegacyRefreshAndLogoutRequireTrustedOriginWithCookie(t *testing.T) {
+	handler := CSRFGuardMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), "https://qa.waveyard.studio")
+	for _, path := range []string{"/auth/refresh", "/auth/logout"} {
+		for _, test := range []struct {
+			origin string
+			want   int
+		}{
+			{"", http.StatusForbidden},
+			{"https://other.waveyard.studio", http.StatusForbidden},
+			{"https://qa.waveyard.studio#unexpected", http.StatusForbidden},
+			{"https://qa.waveyard.studio", http.StatusNoContent},
+		} {
+			req := httptest.NewRequest(http.MethodPost, path, nil)
+			if test.origin != "" {
+				req.Header.Set("Origin", test.origin)
+			}
+			req.AddCookie(&http.Cookie{Name: utils.RefreshCookieName, Value: "legacy"})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			assert.Equal(t, test.want, rec.Code, "%s %s", path, test.origin)
+		}
+	}
+}

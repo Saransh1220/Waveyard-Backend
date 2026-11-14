@@ -228,6 +228,7 @@ func TestConfig_Validate(t *testing.T) {
 
 	t.Run("production mode rejects insecure cookies when browser sessions enabled", func(t *testing.T) {
 		cfg := &Config{
+			JWT: JWTConfig{Secret: "test-configured-secret"},
 			Server: ServerConfig{
 				Environment:            "production",
 				BrowserSessionsEnabled: true,
@@ -243,6 +244,7 @@ func TestConfig_Validate(t *testing.T) {
 
 	t.Run("production mode rejects wildcard origins when browser sessions enabled", func(t *testing.T) {
 		cfg := &Config{
+			JWT: JWTConfig{Secret: "test-configured-secret"},
 			Server: ServerConfig{
 				Environment:            "production",
 				BrowserSessionsEnabled: true,
@@ -258,6 +260,7 @@ func TestConfig_Validate(t *testing.T) {
 
 	t.Run("production mode rejects non-https origins", func(t *testing.T) {
 		cfg := &Config{
+			JWT: JWTConfig{Secret: "test-configured-secret"},
 			Server: ServerConfig{
 				Environment:            "production",
 				BrowserSessionsEnabled: true,
@@ -273,6 +276,7 @@ func TestConfig_Validate(t *testing.T) {
 
 	t.Run("valid production config passes", func(t *testing.T) {
 		cfg := &Config{
+			JWT: JWTConfig{Secret: "test-configured-secret"},
 			Server: ServerConfig{
 				Environment:            "production",
 				BrowserSessionsEnabled: true,

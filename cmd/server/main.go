@@ -185,6 +185,8 @@ func main() {
 		true,
 	)
 
+	authModule.HTTPHandler().ConfigureBrowserSessions(cfg.Server.BrowserSessionsEnabled, cfg.JWT.Secret)
+
 	// 6. Setup Routes
 	mux := gateway.SetupRoutes(gateway.RouterConfig{
 		AuthHandler:             authModule.HTTPHandler(),

@@ -172,30 +172,17 @@ func TestResetPasswordBranches(t *testing.T) {
 		assert.ErrorIs(t, svc.ResetPassword(ctx, valid), domain.ErrInvalidOrExpiredCode)
 	})
 
-	t.Run("revoke failure aborts before the password changes", func(t *testing.T) {
+	t.Run("transaction failure is returned", func(t *testing.T) {
 		svc, _, sessions, tokens, _ := newAuthServiceHarness(t)
 		tokens.On("Consume", ctx, "a@a.com", domain.TokenPurposeResetPassword, "654321").Return(&domain.EmailActionToken{UserID: userID}, nil).Once()
-		sessions.On("RevokeAllForUser", ctx, userID).Return(errors.New("revoke failed")).Once()
-		err := svc.ResetPassword(ctx, valid)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to revoke old sessions")
-	})
-
-	t.Run("update failure", func(t *testing.T) {
-		svc, users, sessions, tokens, _ := newAuthServiceHarness(t)
-		tokens.On("Consume", ctx, "a@a.com", domain.TokenPurposeResetPassword, "654321").Return(&domain.EmailActionToken{UserID: userID}, nil).Once()
-		sessions.On("RevokeAllForUser", ctx, userID).Return(nil).Once()
-		users.On("UpdatePassword", ctx, userID, mock.Anything).Return(errors.New("write failed")).Once()
-		err := svc.ResetPassword(ctx, valid)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to update password")
+		sessions.On("ResetPasswordAndRevokeSessions", ctx, userID, mock.Anything).Return(errors.New("write failed")).Once()
+		assert.EqualError(t, svc.ResetPassword(ctx, valid), "write failed")
 	})
 
 	t.Run("stores a bcrypt hash of the new password", func(t *testing.T) {
-		svc, users, sessions, tokens, _ := newAuthServiceHarness(t)
+		svc, _, sessions, tokens, _ := newAuthServiceHarness(t)
 		tokens.On("Consume", ctx, "a@a.com", domain.TokenPurposeResetPassword, "654321").Return(&domain.EmailActionToken{UserID: userID}, nil).Once()
-		sessions.On("RevokeAllForUser", ctx, userID).Return(nil).Once()
-		users.On("UpdatePassword", ctx, userID, mock.MatchedBy(func(hash string) bool {
+		sessions.On("ResetPasswordAndRevokeSessions", ctx, userID, mock.MatchedBy(func(hash string) bool {
 			return bcrypt.CompareHashAndPassword([]byte(hash), []byte("longenough1")) == nil
 		})).Return(nil).Once()
 		require.NoError(t, svc.ResetPassword(ctx, valid))
@@ -251,7 +238,7 @@ func TestRegisterAndLoginAdditionalBranches(t *testing.T) {
 		hash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
 		require.NoError(t, err)
 		users.On("GetByEmail", ctx, "a@a.com").Return(&domain.User{ID: uuid.New(), PasswordHash: string(hash), EmailVerified: true, Status: domain.UserStatusActive}, nil).Once()
-		sessions.On("Create", ctx, mock.Anything).Return(errors.New("insert failed")).Once()
+		sessions.On("CreateAuthenticated", ctx, mock.Anything, mock.Anything).Return(errors.New("insert failed")).Once()
 		_, err = svc.Login(ctx, LoginRequest{Email: "a@a.com", Password: "password123"})
 		assert.EqualError(t, err, "insert failed")
 	})
@@ -276,7 +263,7 @@ func TestRefreshSessionRotationFailures(t *testing.T) {
 		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
 			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionNotFound).Once()
 		_, err := svc.RefreshSession(ctx, "old")
-		assert.EqualError(t, err, "invalid refresh token")
+		assert.ErrorIs(t, err, domain.ErrSessionNotFound)
 	})
 
 	t.Run("session expired", func(t *testing.T) {
@@ -284,7 +271,7 @@ func TestRefreshSessionRotationFailures(t *testing.T) {
 		sessions.On("RotateSessionTx", ctx, "old", mock.Anything, mock.Anything, mock.Anything, false).
 			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionExpired).Once()
 		_, err := svc.RefreshSession(ctx, "old")
-		assert.EqualError(t, err, "refresh token expired")
+		assert.ErrorIs(t, err, domain.ErrSessionExpired)
 	})
 
 	t.Run("session revoked", func(t *testing.T) {

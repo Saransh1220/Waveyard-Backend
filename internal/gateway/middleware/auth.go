@@ -115,8 +115,10 @@ type authFailure struct {
 	body   string
 }
 
-func (m *AuthMiddleWare) isAllowedUnmarkedRoute(path string) bool {
-	return strings.Contains(path, "/downloads") || strings.Contains(path, "/download-free")
+func isUnmarkedDownload(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		strings.HasPrefix(r.URL.Path, "/licenses/") && strings.HasSuffix(r.URL.Path, "/downloads") &&
+		strings.Count(r.URL.Path, "/") == 3
 }
 
 // authenticate validates the token and returns a request context carrying the
@@ -137,51 +139,31 @@ func (m *AuthMiddleWare) authenticate(r *http.Request) (context.Context, *authFa
 	}
 
 	tokenStr := ""
-
-	if isBrowser {
-		if r.Header.Get("Authorization") != "" {
-			return nil, &authFailure{http.StatusBadRequest, `{"error": "invalid credential combination: session marker cannot be combined with Authorization header"}`}
+	authorization := r.Header.Values("Authorization")
+	if len(authorization) > 1 || (isBrowser && len(authorization) != 0) {
+		return nil, &authFailure{http.StatusBadRequest, `{"error":"invalid credential combination"}`}
+	}
+	if !isBrowser && len(authorization) == 1 {
+		scheme, value, ok := strings.Cut(authorization[0], " ")
+		if ok && scheme == "Bearer" {
+			tokenStr = value
 		}
-
-		accessCount := 0
-		var cookieToken string
-		for _, c := range r.Cookies() {
-			if (c.Name == utils.AccessCookieNameSecure || c.Name == utils.AccessCookieNameInsecure) && c.Value != "" {
-				accessCount++
-				cookieToken = c.Value
+	} else if isBrowser || isUnmarkedDownload(r) {
+		isBrowser = true
+		found := false
+		for _, cookie := range r.Cookies() {
+			if cookie.Name != utils.AccessCookieNameSecure && cookie.Name != utils.AccessCookieNameInsecure {
+				continue
 			}
-		}
-		if accessCount > 1 {
-			return nil, &authFailure{http.StatusBadRequest, `{"error": "duplicate access cookies"}`}
-		}
-		if cookieToken == "" {
-			return nil, &authFailure{http.StatusUnauthorized, `{"error": "missing or invalid authorization"}`}
-		}
-		tokenStr = cookieToken
-	} else {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && parts[0] == "Bearer" {
-				tokenStr = parts[1]
+			if found {
+				return nil, &authFailure{http.StatusBadRequest, `{"error":"duplicate access cookies"}`}
 			}
+			found = true
+			tokenStr = cookie.Value
 		}
-
-		if tokenStr == "" {
-			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && m.isAllowedUnmarkedRoute(r.URL.Path) {
-				for _, c := range r.Cookies() {
-					if (c.Name == utils.AccessCookieNameSecure || c.Name == utils.AccessCookieNameInsecure) && c.Value != "" {
-						tokenStr = c.Value
-						isBrowser = true
-						break
-					}
-				}
-			}
-		}
-
-		if tokenStr == "" {
-			return nil, &authFailure{http.StatusUnauthorized, `{"error": "missing or invalid authorization"}`}
-		}
+	}
+	if tokenStr == "" {
+		return nil, &authFailure{http.StatusUnauthorized, `{"error":"missing or invalid authorization"}`}
 	}
 
 	claims, err := utils.ValidateToken(tokenStr, m.jwtSecret)
@@ -196,15 +178,17 @@ func (m *AuthMiddleWare) authenticate(r *http.Request) (context.Context, *authFa
 		if claims.SessionID == nil {
 			return nil, &authFailure{http.StatusUnauthorized, `{"error": "missing session family id"}`}
 		}
-		if m.sessionLookup != nil {
-			active, err := m.sessionLookup(r.Context(), *claims.SessionID)
-			if err != nil {
-				return nil, &authFailure{http.StatusServiceUnavailable, `{"error": "unable to verify session"}`}
-			}
-			if !active {
-				return nil, &authFailure{http.StatusUnauthorized, `{"error": "session revoked"}`}
-			}
+		if m.sessionLookup == nil {
+			return nil, &authFailure{http.StatusServiceUnavailable, `{"error":"unable to verify session"}`}
 		}
+		active, err := m.sessionLookup(r.Context(), *claims.SessionID)
+		if err != nil {
+			return nil, &authFailure{http.StatusServiceUnavailable, `{"error":"unable to verify session"}`}
+		}
+		if !active {
+			return nil, &authFailure{http.StatusUnauthorized, `{"error":"session revoked"}`}
+		}
+
 	} else {
 		if claims.Purpose == utils.TokenPurposeBrowser {
 			return nil, &authFailure{http.StatusUnauthorized, `{"error": "invalid token purpose"}`}
@@ -222,7 +206,7 @@ func (m *AuthMiddleWare) authenticate(r *http.Request) (context.Context, *authFa
 			return nil, &authFailure{http.StatusServiceUnavailable, `{"error": "unable to verify account"}`}
 		}
 		if state.Status == domain.UserStatusSuspended {
-			return nil, &authFailure{http.StatusForbidden, `{"error": "account suspended"}`}
+			return nil, &authFailure{http.StatusForbidden, `{"error": "account suspended", "code":"ACCOUNT_SUSPENDED"}`}
 		}
 		role = string(state.Role)
 		systemRole = string(state.SystemRole)
@@ -284,12 +268,12 @@ func (m *AuthMiddleWare) FlexibleAuth(next http.Handler) http.Handler {
 
 		ctx, fail := m.authenticate(r)
 		if fail != nil {
-			if fail.status == http.StatusServiceUnavailable || fail.status == http.StatusConflict {
+			if fail.status == http.StatusServiceUnavailable || fail.status == http.StatusConflict || fail.status == http.StatusBadRequest {
 				http.Error(w, fail.body, fail.status)
 				return
 			}
 			if expectedViewer != "" && expectedViewer != "guest" {
-				http.Error(w, `{"error": "session changed", "code": "SESSION_CHANGED"}`, http.StatusConflict)
+				http.Error(w, fail.body, fail.status)
 				return
 			}
 			next.ServeHTTP(w, r)

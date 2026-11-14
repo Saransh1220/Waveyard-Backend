@@ -14,6 +14,10 @@ import (
 func CSRFGuardMiddleware(next http.Handler, allowedOrigins string) http.Handler {
 	allowed := ParseAllowedOrigins(allowedOrigins)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Authenticated and viewer-dependent responses must bypass shared caches.
+		if r.Header.Get(utils.HeaderSessionMarker) != "" || r.Header.Get("Authorization") != "" || hasBrowserAccessCookies(r) {
+			w.Header().Set("Cache-Control", "private, no-store")
+		}
 		// Safe methods and CORS preflight do not require CSRF mutation checks.
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
@@ -32,8 +36,8 @@ func CSRFGuardMiddleware(next http.Handler, allowedOrigins string) http.Handler 
 		}
 
 		sessionMarkerValues := r.Header.Values(utils.HeaderSessionMarker)
-		if len(sessionMarkerValues) > 1 {
-			http.Error(w, `{"error":"duplicate session marker header"}`, http.StatusBadRequest)
+		if len(sessionMarkerValues) > 1 || (len(sessionMarkerValues) == 1 && strings.TrimSpace(sessionMarkerValues[0]) != utils.SessionMarkerCookie) {
+			http.Error(w, `{"error":"invalid session marker header"}`, http.StatusBadRequest)
 			return
 		}
 
@@ -69,8 +73,9 @@ func CSRFGuardMiddleware(next http.Handler, allowedOrigins string) http.Handler 
 
 		// 2. Legacy browser caller compatibility: for browser mutations with an Origin header,
 		// enforce that the Origin is trusted.
-		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
-			if !IsOriginAllowed(origin, allowed, false) {
+		origins := r.Header.Values("Origin")
+		if len(origins) > 0 || (hasAnyAuthCookies(r) && (r.URL.Path == "/auth/refresh" || r.URL.Path == "/auth/logout")) {
+			if len(origins) != 1 || !IsOriginAllowed(strings.TrimSpace(origins[0]), allowed, false) {
 				http.Error(w, `{"error":"forbidden: origin not allowed","code":"CSRF_REJECTED"}`, http.StatusForbidden)
 				return
 			}

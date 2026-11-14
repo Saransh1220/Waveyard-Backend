@@ -59,7 +59,7 @@ func TestRefreshSessionAndLogoutBranches(t *testing.T) {
 	t.Run("missing token", func(t *testing.T) {
 		service, _, _, _, _ := newAuthServiceHarness(t)
 		_, err := service.RefreshSession(ctx, "")
-		require.EqualError(t, err, "refresh token is required")
+		require.ErrorIs(t, err, domain.ErrSessionNotFound)
 		require.NoError(t, service.Logout(ctx, ""))
 	})
 
@@ -76,7 +76,7 @@ func TestRefreshSessionAndLogoutBranches(t *testing.T) {
 		sessions.On("RotateSessionTx", ctx, "unknown", mock.Anything, mock.Anything, mock.Anything, false).
 			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionNotFound).Once()
 		_, err := service.RefreshSession(ctx, "unknown")
-		require.EqualError(t, err, "invalid refresh token")
+		require.ErrorIs(t, err, domain.ErrSessionNotFound)
 	})
 
 	t.Run("revoked token", func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestRefreshSessionAndLogoutBranches(t *testing.T) {
 		sessions.On("RotateSessionTx", ctx, "expired", mock.Anything, mock.Anything, mock.Anything, false).
 			Return(false, uuid.Nil, "", "", nil, domain.ErrSessionExpired).Once()
 		_, err := service.RefreshSession(ctx, "expired")
-		require.EqualError(t, err, "refresh token expired")
+		require.ErrorIs(t, err, domain.ErrSessionExpired)
 	})
 
 	t.Run("suspended user is refused", func(t *testing.T) {

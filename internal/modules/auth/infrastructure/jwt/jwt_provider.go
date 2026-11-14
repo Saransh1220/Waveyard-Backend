@@ -104,3 +104,19 @@ func GenerateRefreshToken() (string, error) {
 	}
 	return base64.URLEncoding.EncodeToString(b), nil
 }
+
+// BrowserSessionForLogout verifies the signature and purpose even after expiry.
+// Callers must use the result solely to revoke the session.
+func BrowserSessionForLogout(token, secret string) *uuid.UUID {
+	if token == "" || secret == "" {
+		return nil
+	}
+	var claims CustomClaims
+	_, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) {
+		return []byte(secret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithoutClaimsValidation())
+	if err != nil || claims.Purpose != PurposeBrowser || claims.SessionID == nil || *claims.SessionID == uuid.Nil {
+		return nil
+	}
+	return claims.SessionID
+}

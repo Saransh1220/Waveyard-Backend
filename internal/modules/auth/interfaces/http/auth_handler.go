@@ -38,12 +38,14 @@ type FileService interface {
 }
 
 type AuthHandler struct {
-	service        AuthService
-	fileService    FileService
-	googleClientID string
-	refreshExpiry  time.Duration
-	secureCookie   bool
-	jwtExpiry      time.Duration
+	service         AuthService
+	fileService     FileService
+	googleClientID  string
+	refreshExpiry   time.Duration
+	secureCookie    bool
+	jwtExpiry       time.Duration
+	browserIssuance bool
+	jwtSecret       string
 }
 
 func NewAuthHandler(service AuthService, fileService FileService, googleClientID string, refreshExpiry time.Duration, secureCookie bool, jwtExpiry ...time.Duration) *AuthHandler {
@@ -52,13 +54,20 @@ func NewAuthHandler(service AuthService, fileService FileService, googleClientID
 		expiry = jwtExpiry[0]
 	}
 	return &AuthHandler{
-		service:        service,
-		fileService:    fileService,
-		googleClientID: googleClientID,
-		refreshExpiry:  refreshExpiry,
-		secureCookie:   secureCookie,
-		jwtExpiry:      expiry,
+		service:         service,
+		fileService:     fileService,
+		googleClientID:  googleClientID,
+		refreshExpiry:   refreshExpiry,
+		secureCookie:    secureCookie,
+		jwtExpiry:       expiry,
+		browserIssuance: true,
 	}
+}
+
+// ConfigureBrowserSessions applies the runtime rollout policy. Existing sessions can always log out.
+func (h *AuthHandler) ConfigureBrowserSessions(enabled bool, jwtSecret string) {
+	h.browserIssuance = enabled
+	h.jwtSecret = jwtSecret
 }
 
 func (h *AuthHandler) setAccessCookie(w http.ResponseWriter, token string, expires time.Time) {
@@ -168,6 +177,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
+	if isBrowser && !h.browserIssuance {
+		http.Error(w, `{"error":"browser session issuance unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
 
 	var req application.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -261,6 +274,10 @@ func (h *AuthHandler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
+	if isBrowser && !h.browserIssuance {
+		http.Error(w, `{"error":"browser session issuance unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
 
 	var req application.GoogleLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -312,6 +329,10 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
+	if isBrowser && !h.browserIssuance {
+		http.Error(w, `{"error":"browser session issuance unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
 
 	// Read refresh token from HttpOnly cookie
 	cookie, err := r.Cookie("refresh_token")
@@ -323,21 +344,16 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	tokens, err := h.service.RefreshSession(r.Context(), cookie.Value, isBrowser)
 	if err != nil {
 		log.Printf("Refresh Error (Service): %v", err)
-		if errors.Is(err, application.ErrAccountSuspended) {
-			if isBrowser {
-				h.clearAuthCookies(w)
-			} else {
-				h.clearLegacyRefreshCookie(w)
-			}
-			http.Error(w, `{"error": "account suspended"}`, http.StatusForbidden)
-			return
+		switch {
+		case errors.Is(err, application.ErrAccountSuspended):
+			http.Error(w, `{"error":"account suspended","code":"ACCOUNT_SUSPENDED"}`, http.StatusForbidden)
+		case errors.Is(err, domain.ErrSessionModeMismatch):
+			http.Error(w, `{"error":"invalid session mode"}`, http.StatusUnauthorized)
+		case errors.Is(err, domain.ErrSessionNotFound), errors.Is(err, domain.ErrSessionExpired), errors.Is(err, domain.ErrSessionRevoked):
+			http.Error(w, `{"error":"invalid or expired refresh token"}`, http.StatusUnauthorized)
+		default:
+			http.Error(w, `{"error":"unable to verify session"}`, http.StatusServiceUnavailable)
 		}
-		if errors.Is(err, domain.ErrSessionModeMismatch) {
-			http.Error(w, `{"error": "invalid session mode"}`, http.StatusUnauthorized)
-			return
-		}
-		// Do not delete cookies on ordinary invalid refresh responses
-		http.Error(w, `{"error": "invalid or expired refresh token"}`, http.StatusUnauthorized)
 		return
 	}
 
@@ -384,22 +400,23 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		refreshToken = cookie.Value
 	}
 
-	// Try extracting family ID from access cookie if present (unverified signature parse for revocation scope)
+	// Only signature-verified browser claims may revoke a family. Expired access
+	// cookies can identify a session for logout, never for normal authentication.
 	var accessFamilyID *uuid.UUID
-	accessCookieName := utils.AccessCookieName(h.secureCookie)
-	if accCookie, err := r.Cookie(accessCookieName); err == nil && accCookie.Value != "" {
-		if claims, err := jwt.ValidateToken(accCookie.Value, ""); err == nil && claims != nil {
-			accessFamilyID = claims.SessionID
-		}
-	} else if inaccCookie, err := r.Cookie(utils.AccessCookieNameInsecure); err == nil && inaccCookie.Value != "" {
-		if claims, err := jwt.ValidateToken(inaccCookie.Value, ""); err == nil && claims != nil {
-			accessFamilyID = claims.SessionID
+	if isBrowser {
+		accessCookie, err := r.Cookie(utils.AccessCookieName(h.secureCookie))
+		if err == nil {
+			accessFamilyID = jwt.BrowserSessionForLogout(accessCookie.Value, h.jwtSecret)
 		}
 	}
 
 	if refreshToken != "" || accessFamilyID != nil {
 		if err := h.service.Logout(r.Context(), refreshToken, accessFamilyID); err != nil {
 			log.Printf("Failed to revoke session: %v", err)
+			if errors.Is(err, domain.ErrSessionConflict) {
+				http.Error(w, `{"error":"session changed","code":"SESSION_CHANGED"}`, http.StatusConflict)
+				return
+			}
 			if isBrowser {
 				http.Error(w, `{"error": "failed to revoke session"}`, http.StatusServiceUnavailable)
 				return

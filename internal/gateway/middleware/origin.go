@@ -20,7 +20,7 @@ func NormalizeOrigin(raw string) string {
 	if scheme != "http" && scheme != "https" {
 		return ""
 	}
-	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
+	if (u.Path != "" && u.Path != "/") || u.ForceQuery || u.RawQuery != "" || u.Fragment != "" || strings.Contains(raw, "#") || u.User != nil {
 		return ""
 	}
 	host := strings.ToLower(u.Host)

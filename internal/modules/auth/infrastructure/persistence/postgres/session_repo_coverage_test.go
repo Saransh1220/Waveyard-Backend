@@ -30,6 +30,7 @@ func TestPgSessionRepositoryMissingAndErrorBranches(t *testing.T) {
 
 	userID := uuid.New()
 	mockDB.ExpectBegin()
+	mockDB.ExpectQuery("SELECT id FROM users").WithArgs(userID).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
 	mockDB.ExpectExec("UPDATE browser_sessions SET revoked_at = \\$1").
 		WithArgs(sqlmock.AnyArg(), userID).WillReturnResult(sqlmock.NewResult(0, 1))
 	mockDB.ExpectExec("UPDATE user_sessions SET is_revoked = true").
@@ -38,6 +39,7 @@ func TestPgSessionRepositoryMissingAndErrorBranches(t *testing.T) {
 	require.NoError(t, repo.RevokeAllForUser(ctx, userID))
 
 	mockDB.ExpectBegin()
+	mockDB.ExpectQuery("SELECT id FROM users").WithArgs(userID).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
 	mockDB.ExpectExec("UPDATE browser_sessions SET revoked_at = \\$1").
 		WithArgs(sqlmock.AnyArg(), userID).WillReturnError(errors.New("write failed"))
 	mockDB.ExpectRollback()

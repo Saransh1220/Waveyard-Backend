@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/application"
 	"github.com/saransh1220/blueprint-audio/internal/modules/auth/domain"
+	"github.com/saransh1220/blueprint-audio/internal/modules/auth/infrastructure/jwt"
 	auth_http "github.com/saransh1220/blueprint-audio/internal/modules/auth/interfaces/http"
 	"github.com/saransh1220/blueprint-audio/internal/shared/utils"
 	"github.com/stretchr/testify/assert"
@@ -187,14 +188,7 @@ func TestAuthHandler_BrowserRefresh_Suspended(t *testing.T) {
 	h.Refresh(w, req)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
-	// Must clear all auth cookies on suspension
-	acc := findCookieByName(w, utils.AccessCookieNameSecure)
-	require.NotNil(t, acc)
-	assert.Equal(t, -1, acc.MaxAge)
-
-	ref := findCookieByName(w, utils.RefreshCookieName)
-	require.NotNil(t, ref)
-	assert.Equal(t, -1, ref.MaxAge)
+	assert.Empty(t, w.Result().Cookies(), "a delayed failure must not clear a newer session")
 }
 
 func TestAuthHandler_BrowserRefresh_ModeMismatch(t *testing.T) {
@@ -304,4 +298,69 @@ func TestAuthHandler_DuplicateCookiesAndHeaders(t *testing.T) {
 	h.Logout(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "duplicate access cookies")
+}
+
+func TestBrowserLogoutVerifiesAccessFamily(t *testing.T) {
+	family := uuid.New()
+	for _, test := range []struct {
+		name, signingKey string
+		expiry           time.Duration
+		revoke           bool
+	}{
+		{"signed active access only", "configured-key", time.Hour, true},
+		{"signed expired access only", "configured-key", -time.Hour, true},
+		{"empty key forgery", "", time.Hour, false},
+		{"wrong key forgery", "wrong-key", time.Hour, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := new(MockAuthService)
+			h := auth_http.NewAuthHandler(service, nil, "", time.Hour, true)
+			h.ConfigureBrowserSessions(true, "configured-key")
+			token, err := jwt.GenerateBrowserToken(test.signingKey, test.expiry, uuid.New(), family, "producer")
+			require.NoError(t, err)
+			if test.revoke {
+				service.On("Logout", mock.Anything, "", &family).Return(nil).Once()
+			}
+			req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+			req.Header.Set(utils.HeaderSessionMarker, utils.SessionMarkerCookie)
+			req.AddCookie(&http.Cookie{Name: utils.AccessCookieNameSecure, Value: token})
+			w := httptest.NewRecorder()
+			h.Logout(w, req)
+			assert.Equal(t, http.StatusNoContent, w.Code)
+			service.AssertExpectations(t)
+		})
+	}
+}
+
+func TestBrowserIssuanceCanBeDisabled(t *testing.T) {
+	service := new(MockAuthService)
+	h := auth_http.NewAuthHandler(service, nil, "", time.Hour, true)
+	h.ConfigureBrowserSessions(false, "configured-key")
+	for path, handler := range map[string]http.HandlerFunc{
+		"/login": h.Login, "/auth/google": h.GoogleLogin, "/auth/refresh": h.Refresh,
+	} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString("{}"))
+			req.Header.Set(utils.HeaderSessionMarker, utils.SessionMarkerCookie)
+			w := httptest.NewRecorder()
+			handler(w, req)
+			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+			assert.Empty(t, w.Result().Cookies())
+		})
+	}
+}
+
+func TestBrowserRefreshStorageFailureIsRetryable(t *testing.T) {
+	service := new(MockAuthService)
+	service.On("RefreshSession", mock.Anything, "refresh", true).Return(nil, errors.New("db down")).Once()
+	h := auth_http.NewAuthHandler(service, nil, "", time.Hour, true)
+	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+	req.Header.Set(utils.HeaderSessionMarker, utils.SessionMarkerCookie)
+	req.AddCookie(&http.Cookie{Name: utils.RefreshCookieName, Value: "refresh"})
+	w := httptest.NewRecorder()
+	h.Refresh(w, req)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Empty(t, w.Result().Cookies())
+	assert.NotContains(t, w.Body.String(), "db down")
+	service.AssertExpectations(t)
 }
