@@ -37,7 +37,7 @@ func (m mockRepo) Update(ctx context.Context, s *domain.Spec) error { return m.u
 func (m mockRepo) Delete(ctx context.Context, id uuid.UUID, producerID uuid.UUID) error {
 	return m.deleteFn(ctx, id, producerID)
 }
-func (m mockRepo) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int) ([]domain.Spec, int, error) {
+func (m mockRepo) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int, filters ...domain.ProducerSpecFilter) ([]domain.Spec, int, error) {
 	return m.listByUserIDFn(ctx, producerID, limit, offset)
 }
 func (m mockRepo) GetByShortCode(ctx context.Context, code string) (*domain.Spec, error) {

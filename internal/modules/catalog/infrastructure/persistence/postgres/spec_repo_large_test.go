@@ -140,7 +140,7 @@ func TestPGSpecRepository_GetByIDAndListByUserID(t *testing.T) {
 	_, err := repo.GetByID(ctx, id)
 	require.NoError(t, err)
 
-	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.producer_id = \$1 AND s\.is_deleted = FALSE AND s\.processing_status = 'completed' ORDER BY s\.created_at DESC LIMIT \$2 OFFSET \$3`).
+	mock.ExpectQuery(`SELECT s\.\*, u\.display_name as producer_name, u.handle as producer_handle, COUNT\(\*\) OVER\(\) as total_count FROM specs s JOIN users u ON s\.producer_id = u\.id WHERE s\.producer_id = \$1 AND s\.is_deleted = FALSE AND s\.processing_status = 'completed' ORDER BY s\.created_at DESC, s\.id DESC LIMIT \$2 OFFSET \$3`).
 		WithArgs(userID, 20, 0).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "producer_id", "title", "category", "type", "bpm", "key", "base_price",

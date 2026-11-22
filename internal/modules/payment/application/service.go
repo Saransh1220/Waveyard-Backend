@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -91,6 +92,7 @@ type paymentService struct {
 	gateways        GatewayResolver
 	snapshotter     domain.ReportingRateSnapshotter
 	txRunner        domain.TxRunner
+	checkoutQuotes  bool
 }
 
 func NewPaymentService(
@@ -133,6 +135,10 @@ func (s *paymentService) SetWebhookRepository(r domain.WebhookEventRepository) {
 
 func (s *paymentService) SetRefundRepository(r domain.RefundRepository) {
 	s.refundRepo = r
+}
+
+func (s *paymentService) EnableCheckoutQuotes() {
+	s.checkoutQuotes = true
 }
 
 func (s *paymentService) getTxRunner() domain.TxRunner {
@@ -193,7 +199,9 @@ func (s *paymentService) CreateOrder(ctx context.Context, userID, specID, licens
 func (s *paymentService) CreateOrderWithOffer(ctx context.Context, input CreateOrderInput) (*domain.Order, error) {
 	key, clientProvided := NormalizeIdempotencyKey(input.IdempotencyKey)
 	input.IdempotencyKey = key
-	fingerprint := ComputeCanonicalFingerprint(input)
+	if input.ResumeOnly && (!clientProvided || s.idempotencyRepo == nil) {
+		return nil, domain.ErrOrderNotFound
+	}
 
 	if s.idempotencyRepo != nil && clientProvided {
 		existing, err := s.idempotencyRepo.GetByUserAndKey(ctx, input.UserID, key)
@@ -201,8 +209,14 @@ func (s *paymentService) CreateOrderWithOffer(ctx context.Context, input CreateO
 			return nil, err
 		}
 		if existing != nil {
-			return s.replayCheckout(ctx, existing, fingerprint)
+			if input.ResumeOnly {
+				return s.resumeReservedCheckout(ctx, existing, input)
+			}
+			return s.replayCheckout(ctx, existing, ComputeCanonicalFingerprint(input))
 		}
+	}
+	if input.ResumeOnly {
+		return nil, domain.ErrOrderNotFound
 	}
 
 	spec, err := s.specFinder.FindWithLicenses(ctx, input.SpecID)
@@ -273,7 +287,22 @@ func (s *paymentService) CreateOrderWithOffer(ctx context.Context, input CreateO
 		}
 	}
 
-	return s.createOrderFromSpec(ctx, spec, licenseOption, offer, input, fingerprint)
+	return s.createOrderFromSpec(ctx, spec, licenseOption, offer, input, ComputeCanonicalFingerprint(input))
+}
+
+func (s *paymentService) resumeReservedCheckout(ctx context.Context, key *domain.OrderIdempotencyKey, input CreateOrderInput) (*domain.Order, error) {
+	if key.OrderID == nil {
+		return nil, domain.ErrOrderReservedInFlight
+	}
+	order, err := s.orderRepo.GetByID(ctx, *key.OrderID)
+	if err != nil {
+		return nil, err
+	}
+	licenseOptionID, _ := order.Notes["license_option_id"].(string)
+	if order.UserID != input.UserID || order.SpecID != input.SpecID || licenseOptionID != input.LicenseOptionID.String() {
+		return nil, domain.ErrIdempotencyConflict
+	}
+	return s.continueCheckout(ctx, key, order)
 }
 
 func (s *paymentService) replayCheckout(ctx context.Context, key *domain.OrderIdempotencyKey, fingerprint string) (*domain.Order, error) {
@@ -287,6 +316,10 @@ func (s *paymentService) replayCheckout(ctx context.Context, key *domain.OrderId
 	if err != nil {
 		return nil, err
 	}
+	return s.continueCheckout(ctx, key, order)
+}
+
+func (s *paymentService) continueCheckout(ctx context.Context, key *domain.OrderIdempotencyKey, order *domain.Order) (*domain.Order, error) {
 	switch order.Status {
 	case domain.OrderStatusPending, domain.OrderStatusProcessing:
 		if key.CheckoutState != domain.CheckoutStateReady {
@@ -304,10 +337,11 @@ func (s *paymentService) replayCheckout(ctx context.Context, key *domain.OrderId
 			if err := s.orderRepo.UpdateStatus(ctx, order.ID, domain.OrderStatusFailed); err != nil {
 				return nil, err
 			}
-			order, err = s.orderRepo.GetByID(ctx, order.ID)
+			expired, err := s.orderRepo.GetByID(ctx, order.ID)
 			if err != nil {
 				return nil, err
 			}
+			order = expired
 			break
 		}
 		order.FillClientFields()
@@ -390,6 +424,38 @@ func (s *paymentService) createOrderFromSpec(
 
 	var idempotencyRecord *domain.OrderIdempotencyKey
 	txErr := s.getTxRunner().WithTx(ctx, func(tx domain.PaymentTx) error {
+		if s.checkoutQuotes {
+			reader, ok := tx.(domain.QuoteReader)
+			if !ok {
+				return errors.New("checkout quote reader is not configured on payment transaction")
+			}
+			quote, err := reader.ReadQuote(ctx, input.SpecID, input.LicenseOptionID, input.Currency)
+			if err != nil {
+				return err
+			}
+			current := quote.Offer
+			if current.PriceID == nil || offer.PriceID == nil || *current.PriceID != *offer.PriceID ||
+				current.Revision != offer.Revision || current.Currency != offer.Currency ||
+				current.AmountMinor != offer.AmountMinor ||
+				(input.QuoteID != "" && input.QuoteID != quote.ID) ||
+				(input.QuoteID == "" && quote.DiscountMinor > 0) {
+				return &PriceMismatchError{
+					Message:      "Checkout price changed. Review the current quote before confirming.",
+					CurrentOffer: current, CurrentQuote: &quote,
+				}
+			}
+			order.Amount = quote.PayableMinor
+			snapshot := order.Notes["pricing_snapshot"].(map[string]any)
+			snapshot["quote_id"] = quote.ID
+			snapshot["requested_currency"] = quote.RequestedCurrency
+			snapshot["discount_minor"] = quote.DiscountMinor
+			snapshot["payable_minor"] = quote.PayableMinor
+			snapshot["validated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+			if quote.Coupon != nil {
+				snapshot["coupon_id"] = quote.Coupon.ID.String()
+				snapshot["coupon_revision"] = quote.Coupon.Revision
+			}
+		}
 		if err := tx.OrderRepo().Create(ctx, order); err != nil {
 			return err
 		}
@@ -418,6 +484,17 @@ func (s *paymentService) createOrderFromSpec(
 		return s.replayCheckout(ctx, idempotencyRecord, fingerprint)
 	}
 	if txErr != nil {
+		var changed *PriceMismatchError
+		if s.checkoutQuotes && s.idempotencyRepo != nil &&
+			(errors.As(txErr, &changed) || errors.Is(txErr, sharedmoney.ErrPriceUnavailable)) {
+			existing, err := s.idempotencyRepo.GetByUserAndKey(ctx, input.UserID, input.IdempotencyKey)
+			if err != nil {
+				return nil, err
+			}
+			if existing != nil {
+				return s.replayCheckout(ctx, existing, fingerprint)
+			}
+		}
 		return nil, txErr
 	}
 
@@ -1044,6 +1121,12 @@ func (s *paymentService) GetOrder(ctx context.Context, orderID, requesterID uuid
 	if order.UserID == requesterID {
 		order.FillClientFields()
 		order.CheckoutURL = nil
+		if order.Status == domain.OrderStatusPaid && s.paymentRepo != nil {
+			if payment, err := s.paymentRepo.GetByOrderID(ctx, order.ID); err == nil && payment != nil &&
+				payment.Status == domain.PaymentStatusCaptured && payment.Currency == order.Currency {
+				order.CapturedAmountMinor = &payment.Amount
+			}
+		}
 		return order, nil
 	}
 	if spec, specErr := s.specFinder.FindByIDIncludingDeleted(ctx, order.SpecID); specErr == nil && spec != nil && spec.ProducerID == requesterID {
@@ -1265,16 +1348,30 @@ func (s *paymentService) sendReceiptEmail(ctx context.Context, order *domain.Ord
 		specTitle = "Blueprint purchase"
 	}
 
-	return s.emailSender.Send(ctx, sharedemail.BuildPaymentReceiptEmail(sharedemail.ReceiptData{
+	data := sharedemail.ReceiptData{
 		BuyerName:     user.Name,
 		BuyerEmail:    buyerEmail,
 		SpecTitle:     specTitle,
 		LicenseType:   order.LicenseType,
-		AmountDisplay: formatMoney(order.Amount, order.Currency),
+		AmountDisplay: formatMoney(payment.Amount, order.Currency),
 		OrderID:       order.ID.String(),
 		PaymentID:     payment.ProviderPaymentID,
 		LicenseID:     license.ID.String(),
-	}, s.appBaseURL))
+	}
+	var snapshot struct {
+		AmountMinor   int `json:"amount_minor"`
+		DiscountMinor int `json:"discount_minor"`
+	}
+	if raw, err := json.Marshal(order.Notes["pricing_snapshot"]); err == nil {
+		if json.Unmarshal(raw, &snapshot) == nil && snapshot.DiscountMinor > 0 {
+			data.OriginalPriceDisplay = formatMoney(snapshot.AmountMinor, order.Currency)
+			data.SavingsDisplay = formatMoney(snapshot.DiscountMinor, order.Currency)
+		}
+	}
+	if payment.Amount > order.Amount {
+		data.TaxDisplay = formatMoney(payment.Amount-order.Amount, order.Currency)
+	}
+	return s.emailSender.Send(ctx, sharedemail.BuildPaymentReceiptEmail(data, s.appBaseURL))
 }
 
 func formatMoney(amount int, currency string) string {

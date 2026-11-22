@@ -1,6 +1,8 @@
 package http
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,10 +20,47 @@ import (
 
 type PaymentHandler struct {
 	service application.PaymentService
+	quotes  domain.QuoteReader
 }
 
-func NewPaymentHandler(service application.PaymentService) *PaymentHandler {
-	return &PaymentHandler{service: service}
+func NewPaymentHandler(service application.PaymentService, quotes ...domain.QuoteReader) *PaymentHandler {
+	handler := &PaymentHandler{service: service}
+	if len(quotes) > 0 {
+		handler.quotes = quotes[0]
+	}
+	return handler
+}
+
+func (h *PaymentHandler) GetCheckoutQuote(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if h.quotes == nil {
+		http.Error(w, "checkout quote unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	params := r.URL.Query()
+	specID, specErr := uuid.Parse(params.Get("spec_id"))
+	optionID, optionErr := uuid.Parse(params.Get("license_option_id"))
+	if specErr != nil || optionErr != nil {
+		http.Error(w, "invalid spec_id or license_option_id", http.StatusBadRequest)
+		return
+	}
+	currency := strings.TrimSpace(params.Get("currency"))
+	if currency == "" {
+		currency = middleware.BuyerCurrencyFromContext(r.Context())
+	}
+	quote, err := h.quotes.ReadQuote(r.Context(), specID, optionID, currency)
+	switch {
+	case errors.Is(err, money.ErrPriceUnavailable):
+		http.Error(w, "checkout price unavailable", http.StatusConflict)
+	case errors.Is(err, money.ErrInvalidCurrency):
+		http.Error(w, "invalid currency", http.StatusBadRequest)
+	case err != nil:
+		log.Printf("checkout quote failed: %v", err)
+		http.Error(w, "checkout quote unavailable", http.StatusInternalServerError)
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(quote)
+	}
 }
 
 func (h *PaymentHandler) ProviderWebhook(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +167,10 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		ExpectedAmountMinor *int    `json:"expected_amount_minor,omitempty"`
 		ExpectedCurrency    *string `json:"expected_currency,omitempty"`
 		IdempotencyKey      string  `json:"idempotency_key,omitempty"`
+		QuoteID             string  `json:"quote_id,omitempty"`
+		ResumeOnly          bool    `json:"resume_only,omitempty"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -161,9 +203,16 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	idempotencyKey, valid := readIdempotencyKey(r, req.IdempotencyKey)
-	if !valid {
+	if !valid || (req.ResumeOnly && idempotencyKey == "") {
 		http.Error(w, "invalid Idempotency-Key", http.StatusBadRequest)
 		return
+	}
+	if req.QuoteID != "" {
+		decoded, err := hex.DecodeString(req.QuoteID)
+		if err != nil || len(decoded) != sha256.Size || strings.ToLower(req.QuoteID) != req.QuoteID {
+			http.Error(w, "invalid quote_id", http.StatusBadRequest)
+			return
+		}
 	}
 
 	input := application.CreateOrderInput{
@@ -176,10 +225,20 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		ExpectedAmountMinor: req.ExpectedAmountMinor,
 		ExpectedCurrency:    req.ExpectedCurrency,
 		IdempotencyKey:      idempotencyKey,
+		QuoteID:             req.QuoteID,
+		ResumeOnly:          req.ResumeOnly,
 	}
 
 	order, err := h.service.CreateOrderWithOffer(r.Context(), input)
 	if err != nil {
+		if req.ResumeOnly && errors.Is(err, domain.ErrOrderNotFound) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{
+				"code": "CHECKOUT_NOT_FOUND", "message": "No earlier checkout was found",
+			})
+			return
+		}
 		if errors.Is(err, domain.ErrIdempotencyConflict) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
@@ -214,11 +273,15 @@ func (h *PaymentHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &priceMismatch) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			response := map[string]any{
 				"code":          "PRICE_CHANGED",
 				"message":       priceMismatch.Message,
 				"current_offer": priceMismatch.CurrentOffer,
-			})
+			}
+			if priceMismatch.CurrentQuote != nil {
+				response["current_quote"] = priceMismatch.CurrentQuote
+			}
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 		if errors.Is(err, money.ErrInvalidCurrency) {

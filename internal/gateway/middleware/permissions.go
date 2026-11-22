@@ -8,9 +8,10 @@ type Permission string
 
 const (
 	// Producer capabilities.
-	PermSpecUpload     Permission = "spec:upload"
-	PermAnalyticsView  Permission = "analytics:view"
-	PermOrdersProducer Permission = "orders:producer"
+	PermSpecUpload       Permission = "spec:upload"
+	PermAnalyticsView    Permission = "analytics:view"
+	PermOrdersProducer   Permission = "orders:producer"
+	PermPromotionsManage Permission = "promotions:manage"
 
 	// Administration.
 	PermAdminUsersRead     Permission = "admin:users:read"
@@ -35,6 +36,7 @@ var AllPermissions = []Permission{
 	PermSpecUpload,
 	PermAnalyticsView,
 	PermOrdersProducer,
+	PermPromotionsManage,
 	PermAdminUsersRead,
 	PermAdminUsersWrite,
 	PermAdminRolesRead,

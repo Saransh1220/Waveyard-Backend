@@ -30,7 +30,7 @@ func (s *specRepoStub) Update(ctx context.Context, spec *catalogDomain.Spec) err
 func (s *specRepoStub) Delete(ctx context.Context, id uuid.UUID, producerID uuid.UUID) error {
 	return nil
 }
-func (s *specRepoStub) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int) ([]catalogDomain.Spec, int, error) {
+func (s *specRepoStub) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int, _ ...catalogDomain.ProducerSpecFilter) ([]catalogDomain.Spec, int, error) {
 	return nil, 0, nil
 }
 func (s *specRepoStub) UpdateFilesAndStatus(ctx context.Context, id uuid.UUID, files map[string]*string, status catalogDomain.ProcessingStatus) error {

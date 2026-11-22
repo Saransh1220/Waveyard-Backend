@@ -13,15 +13,18 @@ import (
 var templateFS embed.FS
 
 type ReceiptData struct {
-	BuyerName     string
-	BuyerEmail    string
-	SpecTitle     string
-	LicenseType   string
-	AmountDisplay string
-	OrderID       string
-	PaymentID     string
-	LicenseID     string
-	SupportEmail  string
+	BuyerName            string
+	BuyerEmail           string
+	SpecTitle            string
+	LicenseType          string
+	AmountDisplay        string
+	OrderID              string
+	PaymentID            string
+	LicenseID            string
+	SupportEmail         string
+	OriginalPriceDisplay string
+	SavingsDisplay       string
+	TaxDisplay           string
 }
 
 type emailCTA struct {
@@ -156,14 +159,7 @@ func BuildPaymentReceiptEmail(data ReceiptData, appBaseURL string) Message {
 			Label: "Open purchase dashboard",
 			URL:   link,
 		},
-		MetaRows: []emailMetaRow{
-			{Label: "Title", Value: data.SpecTitle},
-			{Label: "License", Value: data.LicenseType},
-			{Label: "Amount", Value: data.AmountDisplay},
-			{Label: "Order ID", Value: data.OrderID},
-			{Label: "Payment ID", Value: data.PaymentID},
-			{Label: "License ID", Value: data.LicenseID},
-		},
+		MetaRows:     paymentReceiptRows(data),
 		FooterNote:   "This email is your purchase receipt from Blueprint.",
 		SupportEmail: strings.TrimSpace(data.SupportEmail),
 	}
@@ -174,6 +170,28 @@ func BuildPaymentReceiptEmail(data ReceiptData, appBaseURL string) Message {
 		Text:    buildPaymentReceiptText(name, data, link),
 		HTML:    mustRenderTemplate("payment-receipt.html", viewData),
 	}
+}
+
+func paymentReceiptRows(data ReceiptData) []emailMetaRow {
+	rows := []emailMetaRow{
+		{Label: "Title", Value: data.SpecTitle},
+		{Label: "License", Value: data.LicenseType},
+	}
+	if data.SavingsDisplay != "" {
+		rows = append(rows,
+			emailMetaRow{Label: "Original price", Value: data.OriginalPriceDisplay},
+			emailMetaRow{Label: "Coupon savings", Value: data.SavingsDisplay},
+		)
+	}
+	if data.TaxDisplay != "" {
+		rows = append(rows, emailMetaRow{Label: "Tax", Value: data.TaxDisplay})
+	}
+	return append(rows,
+		emailMetaRow{Label: "Amount paid", Value: data.AmountDisplay},
+		emailMetaRow{Label: "Order ID", Value: data.OrderID},
+		emailMetaRow{Label: "Payment ID", Value: data.PaymentID},
+		emailMetaRow{Label: "License ID", Value: data.LicenseID},
+	)
 }
 
 func displayNameOrFallback(displayName string) string {
@@ -229,16 +247,11 @@ func buildPaymentReceiptText(name string, data ReceiptData, link string) string 
 		"",
 		"Your purchase is confirmed and your license is ready.",
 		"",
-		fmt.Sprintf("Title: %s", data.SpecTitle),
-		fmt.Sprintf("License: %s", data.LicenseType),
-		fmt.Sprintf("Amount: %s", data.AmountDisplay),
-		fmt.Sprintf("Order ID: %s", data.OrderID),
-		fmt.Sprintf("Payment ID: %s", data.PaymentID),
-		fmt.Sprintf("License ID: %s", data.LicenseID),
-		"",
-		"Open your licenses here:",
-		link,
 	}
+	for _, row := range paymentReceiptRows(data) {
+		lines = append(lines, fmt.Sprintf("%s: %s", row.Label, row.Value))
+	}
+	lines = append(lines, "", "Open your licenses here:", link)
 	if support := strings.TrimSpace(data.SupportEmail); support != "" {
 		lines = append(lines, "", fmt.Sprintf("Need help? Contact %s", support))
 	}

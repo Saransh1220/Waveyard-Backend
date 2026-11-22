@@ -42,6 +42,10 @@ func ComputeCanonicalFingerprint(input CreateOrderInput) string {
 		parts = append(parts, "none")
 	}
 
+	if input.QuoteID != "" {
+		parts[0] = "v2"
+		parts = append(parts, input.QuoteID)
+	}
 	canonicalString := strings.Join(parts, "|")
 	hash := sha256.Sum256([]byte(canonicalString))
 	return hex.EncodeToString(hash[:])

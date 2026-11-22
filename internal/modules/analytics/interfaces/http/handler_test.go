@@ -88,7 +88,7 @@ func (m *mockSpecRepo) Update(ctx context.Context, spec *catalogDomain.Spec) err
 func (m *mockSpecRepo) Delete(ctx context.Context, id uuid.UUID, producerID uuid.UUID) error {
 	return nil
 }
-func (m *mockSpecRepo) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int) ([]catalogDomain.Spec, int, error) {
+func (m *mockSpecRepo) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int, _ ...catalogDomain.ProducerSpecFilter) ([]catalogDomain.Spec, int, error) {
 	return nil, 0, nil
 }
 func (m *mockSpecRepo) UpdateFilesAndStatus(ctx context.Context, id uuid.UUID, files map[string]*string, status catalogDomain.ProcessingStatus) error {

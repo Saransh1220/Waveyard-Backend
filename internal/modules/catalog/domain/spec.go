@@ -100,6 +100,12 @@ type Genre struct {
 }
 
 // SpecFilter contains all possible filters for listing specs
+type ProducerSpecFilter struct {
+	BeatsOnly bool
+	Search    string
+	IDs       []uuid.UUID
+}
+
 type SpecFilter struct {
 	Currency    string // Effective buyer currency for exact stored-price filtering and sorting.
 	Category    Category
@@ -130,7 +136,7 @@ type SpecRepository interface {
 	Update(ctx context.Context, spec *Spec) error
 	UpdateFilesAndStatus(ctx context.Context, id uuid.UUID, files map[string]*string, status ProcessingStatus) error
 	Delete(ctx context.Context, id uuid.UUID, producerID uuid.UUID) error
-	ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int) ([]Spec, int, error)
+	ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int, filters ...ProducerSpecFilter) ([]Spec, int, error)
 	GetBySlug(ctx context.Context, slug string) (*Spec, error)
 	GetByShortCode(ctx context.Context, shortCode string) (*Spec, error)
 	GetHomepageStats(ctx context.Context) (*HomepageStats, error)

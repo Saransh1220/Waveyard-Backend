@@ -18,14 +18,21 @@ type DBTX interface {
 }
 
 type PgTxRunner struct {
-	db *sqlx.DB
+	db           *sqlx.DB
+	applyCoupons bool
 }
 
-func NewTxRunner(db *sqlx.DB) domain.TxRunner {
+func NewTxRunner(db *sqlx.DB) *PgTxRunner {
 	return &PgTxRunner{db: db}
 }
 
+func NewCheckoutTxRunner(db *sqlx.DB, applyCoupons bool) *PgTxRunner {
+	return &PgTxRunner{db: db, applyCoupons: applyCoupons}
+}
+
 type paymentTx struct {
+	db              *sqlx.Tx
+	applyCoupons    bool
 	orderRepo       domain.OrderRepository
 	paymentRepo     domain.PaymentRepository
 	licenseRepo     domain.LicenseRepository
@@ -49,6 +56,8 @@ func (r *PgTxRunner) WithTx(ctx context.Context, fn func(tx domain.PaymentTx) er
 	}()
 
 	pt := &paymentTx{
+		db:              tx,
+		applyCoupons:    r.applyCoupons,
 		orderRepo:       NewOrderRepositoryWithDB(tx),
 		paymentRepo:     NewPaymentRepositoryWithDB(tx),
 		licenseRepo:     NewLicenseRepositoryWithDB(tx),
