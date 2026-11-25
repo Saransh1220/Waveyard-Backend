@@ -29,7 +29,8 @@ jobs:
       TEST_DB_PASSWORD: postgres
       TEST_DB_NAME: waveyard_test
       TEST_DB_SSLMODE: disable
-      AUTH_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/waveyard_test?sslmode=disable
+      # The browser session test appends search_path in keyword DSN format.
+      AUTH_TEST_POSTGRES_URL: host=127.0.0.1 port=5432 user=postgres password=postgres dbname=waveyard_test sslmode=disable
       TEST_PAYMENT_DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/waveyard_test?sslmode=disable
       TEST_PROMOTIONS_DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/waveyard_test?sslmode=disable
     steps:
