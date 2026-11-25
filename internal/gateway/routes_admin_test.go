@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/saransh1220/blueprint-audio/internal/gateway/middleware"
 	"github.com/saransh1220/blueprint-audio/internal/gateway/openapi"
 	admin_http "github.com/saransh1220/blueprint-audio/internal/modules/admin/interfaces/http"
@@ -15,8 +17,51 @@ import (
 	legal_http "github.com/saransh1220/blueprint-audio/internal/modules/legal/interfaces/http"
 	notification_http "github.com/saransh1220/blueprint-audio/internal/modules/notification/interfaces/http"
 	payment_http "github.com/saransh1220/blueprint-audio/internal/modules/payment/interfaces/http"
+	promotion_http "github.com/saransh1220/blueprint-audio/internal/modules/promotion/interfaces/http"
 	user_http "github.com/saransh1220/blueprint-audio/internal/modules/user/interfaces/http"
+	"github.com/saransh1220/blueprint-audio/internal/shared/utils"
+	"github.com/stretchr/testify/require"
 )
+
+func TestPromotionRoutesRequireProducerPermission(t *testing.T) {
+	const secret = "promotion-route-test"
+	roles := middleware.NewStaticRoleStore(
+		middleware.RoleDef{Name: "producer", Kind: middleware.RoleKindBusiness, Permissions: []middleware.Permission{middleware.PermPromotionsManage}},
+		middleware.RoleDef{Name: "artist", Kind: middleware.RoleKindBusiness},
+		middleware.RoleDef{Name: "super_admin", Kind: middleware.RoleKindSystem},
+	)
+	mux := SetupRoutes(RouterConfig{
+		AuthHandler:         &auth_http.AuthHandler{},
+		AuthMiddleware:      middleware.NewAuthMiddleware(secret).WithRoleStore(roles),
+		SpecHandler:         &catalog_http.SpecHandler{},
+		UserHandler:         &user_http.UserHandler{},
+		PaymentHandler:      &payment_http.PaymentHandler{},
+		AnalyticsHandler:    &analytics_http.AnalyticsHandler{},
+		NotificationHandler: &notification_http.NotificationHandler{},
+		PromotionHandler:    promotion_http.NewHandler(nil),
+	})
+	artistToken, err := utils.GenerateToken(uuid.New(), "artist@example.test", "artist", "super_admin", secret, time.Hour)
+	require.NoError(t, err)
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/studio/promotions"},
+		{"POST", "/studio/promotions"},
+		{"GET", "/studio/promotions/id"},
+		{"GET", "/studio/promotions/id/preview"},
+		{"POST", "/studio/promotions/id/enrollment-check"},
+		{"PATCH", "/studio/promotions/id"},
+	} {
+		req := httptest.NewRequest(route.method, route.path, nil)
+		res := httptest.NewRecorder()
+		mux.ServeHTTP(res, req)
+		require.Equal(t, http.StatusUnauthorized, res.Code, route)
+
+		req = httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("Authorization", "Bearer "+artistToken)
+		res = httptest.NewRecorder()
+		mux.ServeHTTP(res, req)
+		require.Equal(t, http.StatusForbidden, res.Code, route)
+	}
+}
 
 func TestSetupRoutesRegistersAdminRoutes(t *testing.T) {
 	mux := SetupRoutes(RouterConfig{

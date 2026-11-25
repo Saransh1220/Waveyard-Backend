@@ -1320,7 +1320,7 @@ func (r *PgSpecRepository) Update(ctx context.Context, spec *domain.Spec) error 
 }
 
 // ListByUserID retrieves all specs for a specific producer with pagination.
-func (r *PgSpecRepository) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int) ([]domain.Spec, int, error) {
+func (r *PgSpecRepository) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int, filters ...domain.ProducerSpecFilter) ([]domain.Spec, int, error) {
 	var results []struct {
 		domain.Spec
 		TotalCount int `db:"total_count"`
@@ -1333,11 +1333,33 @@ func (r *PgSpecRepository) ListByUserID(ctx context.Context, producerID uuid.UUI
 		WHERE s.producer_id = $1
 		  AND s.is_deleted = FALSE
 		  AND s.processing_status = 'completed'
-		ORDER BY s.created_at DESC 
+	`
+	args := []any{producerID, limit, offset}
+	for _, filter := range filters {
+		if filter.BeatsOnly {
+			query += " AND s.category = 'beat'"
+		}
+		if len(filter.IDs) > 0 {
+			args = append(args, pq.Array(filter.IDs))
+			query += fmt.Sprintf(" AND s.id = ANY($%d::uuid[])", len(args))
+		}
+		if filter.Search != "" {
+			args = append(args, filter.Search)
+			param := fmt.Sprintf("$%d", len(args))
+			query += ` AND (
+				strpos(lower(s.title), lower(` + param + `)) > 0 OR strpos(lower(s.key), lower(` + param + `)) > 0
+				OR EXISTS (
+					SELECT 1 FROM spec_genres sg JOIN genres g ON g.id = sg.genre_id
+					WHERE sg.spec_id = s.id AND strpos(lower(g.name), lower(` + param + `)) > 0
+				))`
+		}
+	}
+	query += `
+		ORDER BY s.created_at DESC, s.id DESC
 		LIMIT $2 OFFSET $3
 	`
 
-	err := r.db.SelectContext(ctx, &results, query, producerID, limit, offset)
+	err := r.db.SelectContext(ctx, &results, query, args...)
 	if err != nil {
 		return nil, 0, err
 	}

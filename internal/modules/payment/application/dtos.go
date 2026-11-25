@@ -18,11 +18,14 @@ type CreateOrderInput struct {
 	ExpectedAmountMinor *int       `json:"expected_amount_minor,omitempty"`
 	ExpectedCurrency    *string    `json:"expected_currency,omitempty"`
 	IdempotencyKey      string     `json:"idempotency_key,omitempty"`
+	QuoteID             string     `json:"quote_id,omitempty"`
+	ResumeOnly          bool       `json:"resume_only,omitempty"`
 }
 
 type PriceMismatchError struct {
 	Message      string                   `json:"message"`
 	CurrentOffer money.SelectedPriceOffer `json:"current_offer"`
+	CurrentQuote *domain.CheckoutQuote    `json:"current_quote,omitempty"`
 }
 
 func (e *PriceMismatchError) Error() string {

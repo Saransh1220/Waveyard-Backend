@@ -26,6 +26,7 @@ type SpecResponse struct {
 	PriceMoney        money.Money               `json:"price_money"`
 	DisplayPriceMoney money.Money               `json:"display_price_money"`
 	SelectedPrice     *money.SelectedPriceOffer `json:"selected_price,omitempty"`
+	Promotion         *SpecPromotion            `json:"promotion,omitempty"`
 	Duration          int                       `json:"duration"`
 	FreeMp3Enabled    bool                      `json:"free_mp3_enabled"`
 	CreatedAt         time.Time                 `json:"created_at"`
@@ -88,6 +89,7 @@ type LicenseResponse struct {
 	PriceMoney        money.Money               `json:"price_money"`
 	DisplayPriceMoney money.Money               `json:"display_price_money"`
 	SelectedPrice     *money.SelectedPriceOffer `json:"selected_price,omitempty"`
+	Discount          *money.CheckoutDiscount   `json:"discount,omitempty"`
 	Prices            []money.StoredPrice       `json:"prices,omitempty"`
 	Features          []string                  `json:"features"`
 	FileTypes         []string                  `json:"file_types"`

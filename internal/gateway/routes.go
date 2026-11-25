@@ -18,6 +18,7 @@ import (
 	legal_http "github.com/saransh1220/blueprint-audio/internal/modules/legal/interfaces/http"
 	notification_http "github.com/saransh1220/blueprint-audio/internal/modules/notification/interfaces/http"
 	payment_http "github.com/saransh1220/blueprint-audio/internal/modules/payment/interfaces/http"
+	promotion_http "github.com/saransh1220/blueprint-audio/internal/modules/promotion/interfaces/http"
 	user_http "github.com/saransh1220/blueprint-audio/internal/modules/user/interfaces/http"
 )
 
@@ -31,6 +32,7 @@ type RouterConfig struct {
 	SpecUploadHandler       *catalog_http.SpecUploadHandler
 	UserHandler             *user_http.UserHandler
 	PaymentHandler          *payment_http.PaymentHandler
+	PromotionHandler        *promotion_http.Handler
 	AnalyticsHandler        *analytics_http.AnalyticsHandler
 	NotificationHandler     *notification_http.NotificationHandler
 	AdminHandler            *admin_http.AdminHandler
@@ -126,6 +128,15 @@ func SetupRoutes(config RouterConfig) *http.ServeMux {
 	// a permission is data in the roles table (see middleware/permissions.go).
 	authz := config.AuthMiddleware.Authorize
 
+	if config.PromotionHandler != nil {
+		mux.Handle("GET /studio/promotions", authz(middleware.PermPromotionsManage)(http.HandlerFunc(config.PromotionHandler.List)))
+		mux.Handle("POST /studio/promotions", authz(middleware.PermPromotionsManage)(http.HandlerFunc(config.PromotionHandler.Create)))
+		mux.Handle("GET /studio/promotions/{id}", authz(middleware.PermPromotionsManage)(http.HandlerFunc(config.PromotionHandler.Get)))
+		mux.Handle("GET /studio/promotions/{id}/preview", authz(middleware.PermPromotionsManage)(http.HandlerFunc(config.PromotionHandler.Preview)))
+		mux.Handle("POST /studio/promotions/{id}/enrollment-check", authz(middleware.PermPromotionsManage)(http.HandlerFunc(config.PromotionHandler.CheckEnrollment)))
+		mux.Handle("PATCH /studio/promotions/{id}", authz(middleware.PermPromotionsManage)(http.HandlerFunc(config.PromotionHandler.Change)))
+	}
+
 	// Catalog/Spec Routes
 	mux.Handle("GET /catalog/home", config.AuthMiddleware.FlexibleAuth(buyerCurrency(http.HandlerFunc(config.SpecHandler.Home))))
 	mux.Handle("GET /specs", config.AuthMiddleware.FlexibleAuth(buyerCurrency(http.HandlerFunc(config.SpecHandler.List))))
@@ -158,6 +169,8 @@ func SetupRoutes(config RouterConfig) *http.ServeMux {
 
 	// Payment Routes
 	mux.Handle("POST /orders", config.AuthMiddleware.RequireAuth(buyerCurrency(http.HandlerFunc(config.PaymentHandler.CreateOrder))))
+	quoteLimiter := middleware.RateLimitMiddleware(120, time.Minute)
+	mux.Handle("GET /orders/quote", config.AuthMiddleware.FlexibleAuth(buyerCurrency(http.HandlerFunc(quoteLimiter(config.PaymentHandler.GetCheckoutQuote)))))
 	mux.Handle("GET /orders", config.AuthMiddleware.RequireAuth(buyerCurrency(http.HandlerFunc(config.PaymentHandler.GetUserOrders))))
 	mux.Handle("GET /orders/{id}", config.AuthMiddleware.RequireAuth(buyerCurrency(http.HandlerFunc(config.PaymentHandler.GetOrder))))
 	mux.Handle("GET /orders/{id}/status", config.AuthMiddleware.RequireAuth(buyerCurrency(http.HandlerFunc(config.PaymentHandler.GetOrderStatus))))

@@ -54,27 +54,28 @@ const (
 )
 
 type Order struct {
-	ID                 uuid.UUID      `json:"id" db:"id"`
-	UserID             uuid.UUID      `json:"user_id" db:"user_id"`
-	SpecID             uuid.UUID      `json:"spec_id" db:"spec_id"`
-	LicenseType        string         `json:"license_type" db:"license_type"`
-	Amount             int            `json:"amount" db:"amount"`
-	Currency           string         `json:"currency" db:"currency"`
-	RazorpayOrderID    *string        `json:"razorpay_order_id,omitempty" db:"-"`
-	Provider           string         `json:"provider" db:"provider"`
-	ProviderCheckoutID *string        `json:"provider_checkout_id,omitempty" db:"provider_checkout_id"`
-	ProviderPaymentID  *string        `json:"provider_payment_id,omitempty" db:"provider_payment_id"`
-	CheckoutURL        *string        `json:"checkout_url,omitempty" db:"checkout_url"`
-	Status             OrderStatus    `json:"status" db:"status"`
-	Notes              map[string]any `json:"notes,omitempty" db:"notes"`
-	ReportCurrency     *string        `json:"report_currency,omitempty" db:"report_currency"`
-	ReportFXRate       *string        `json:"report_fx_rate,omitempty" db:"report_fx_rate"`
-	ReportFXAsOf       *time.Time     `json:"report_fx_as_of,omitempty" db:"report_fx_as_of"`
-	ReportFXFetchedAt  *time.Time     `json:"report_fx_fetched_at,omitempty" db:"report_fx_fetched_at"`
-	ReportFXRateID     *int64         `json:"report_fx_rate_id,omitempty" db:"report_fx_rate_id"`
-	CreatedAt          time.Time      `json:"created_at" db:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at" db:"updated_at"`
-	ExpiresAt          time.Time      `json:"expires_at" db:"expires_at"`
+	ID                  uuid.UUID      `json:"id" db:"id"`
+	UserID              uuid.UUID      `json:"user_id" db:"user_id"`
+	SpecID              uuid.UUID      `json:"spec_id" db:"spec_id"`
+	LicenseType         string         `json:"license_type" db:"license_type"`
+	Amount              int            `json:"amount" db:"amount"`
+	CapturedAmountMinor *int           `json:"captured_amount_minor,omitempty" db:"-"`
+	Currency            string         `json:"currency" db:"currency"`
+	RazorpayOrderID     *string        `json:"razorpay_order_id,omitempty" db:"-"`
+	Provider            string         `json:"provider" db:"provider"`
+	ProviderCheckoutID  *string        `json:"provider_checkout_id,omitempty" db:"provider_checkout_id"`
+	ProviderPaymentID   *string        `json:"provider_payment_id,omitempty" db:"provider_payment_id"`
+	CheckoutURL         *string        `json:"checkout_url,omitempty" db:"checkout_url"`
+	Status              OrderStatus    `json:"status" db:"status"`
+	Notes               map[string]any `json:"notes,omitempty" db:"notes"`
+	ReportCurrency      *string        `json:"report_currency,omitempty" db:"report_currency"`
+	ReportFXRate        *string        `json:"report_fx_rate,omitempty" db:"report_fx_rate"`
+	ReportFXAsOf        *time.Time     `json:"report_fx_as_of,omitempty" db:"report_fx_as_of"`
+	ReportFXFetchedAt   *time.Time     `json:"report_fx_fetched_at,omitempty" db:"report_fx_fetched_at"`
+	ReportFXRateID      *int64         `json:"report_fx_rate_id,omitempty" db:"report_fx_rate_id"`
+	CreatedAt           time.Time      `json:"created_at" db:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at" db:"updated_at"`
+	ExpiresAt           time.Time      `json:"expires_at" db:"expires_at"`
 }
 
 type OrderFXSnapshot struct {

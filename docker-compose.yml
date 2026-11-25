@@ -16,7 +16,7 @@ services:
     networks:
       - blueprint-audio_network
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,7 +32,7 @@ services:
     networks:
       - blueprint-audio_network
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -68,6 +68,7 @@ services:
       # JWT
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRATION: ${JWT_EXPIRATION:-24h}
+      AUTH_BROWSER_SESSIONS_ENABLED: ${AUTH_BROWSER_SESSIONS_ENABLED:-true}
 
       # Google OAuth
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
@@ -92,6 +93,7 @@ services:
       DODO_PAYMENTS_PRODUCT_ID: ${DODO_PAYMENTS_PRODUCT_ID:-}
       DODO_PAYMENTS_WEBHOOK_KEY: ${DODO_PAYMENTS_WEBHOOK_KEY:-}
       DODO_PAYMENTS_API_URL: ${DODO_PAYMENTS_API_URL:-}
+      CHECKOUT_COUPONS_ENABLED: ${CHECKOUT_COUPONS_ENABLED:-false}
 
       # Currency fallback for generated USD prices
       # FX rates
@@ -113,10 +115,10 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
 
-      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:4200}                                                                     
-      EMAIL_ENABLED: ${EMAIL_ENABLED:-true}                                                                                    
-      RESEND_API_KEY: ${RESEND_API_KEY}                                                                                        
-      EMAIL_FROM: ${EMAIL_FROM}                                                                                                
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:4200}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-true}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      EMAIL_FROM: ${EMAIL_FROM}
       EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
       SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
 
@@ -142,7 +144,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: blueprint-audio_worker
-    command: [ "./worker" ]
+    command: ["./worker"]
     environment:
       ENV: ${ENV:-development}
 

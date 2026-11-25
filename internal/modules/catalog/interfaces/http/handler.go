@@ -19,6 +19,7 @@ import (
 	"github.com/saransh1220/blueprint-audio/internal/gateway/middleware"
 	"github.com/saransh1220/blueprint-audio/internal/modules/catalog/application"
 	"github.com/saransh1220/blueprint-audio/internal/modules/catalog/domain"
+	promotion "github.com/saransh1220/blueprint-audio/internal/modules/promotion/domain"
 	"github.com/saransh1220/blueprint-audio/internal/shared/money"
 )
 
@@ -28,6 +29,7 @@ type SpecHandler struct {
 	analyticsService    AnalyticsService
 	notificationService NotificationService
 	redisClient         *redis.Client
+	checkoutCoupons     promotion.CheckoutCouponReader
 }
 
 func NewSpecHandler(service application.SpecService, fileService FileService, analyticsService AnalyticsService, notificationService NotificationService, redisClient *redis.Client) *SpecHandler {
@@ -155,6 +157,7 @@ func (h *SpecHandler) Get(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", cacheStatus)
+	h.attachCheckoutCoupons(r.Context(), []*SpecResponse{response})
 	json.NewEncoder(w).Encode(response)
 }
 
@@ -281,6 +284,7 @@ func (h *SpecHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.attachListCheckoutCoupons(r.Context(), responses)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"data": responses,
@@ -343,6 +347,7 @@ func (h *SpecHandler) Home(w http.ResponseWriter, r *http.Request) {
 		Sections: make(map[string]HomepageSectionResponse, len(home.Sections)),
 	}
 
+	var couponSpecs []*SpecResponse
 	for key, section := range home.Sections {
 		items := make([]HomepageItemResponse, len(section.Items))
 		log.Printf("[SpecHandler.Home] serializing section=%s source=%s period=%s items=%d", key, section.Source, section.Period, len(section.Items))
@@ -363,6 +368,9 @@ func (h *SpecHandler) Home(w http.ResponseWriter, r *http.Request) {
 			}(i, item)
 		}
 		wg.Wait()
+		for i := range items {
+			couponSpecs = append(couponSpecs, &items[i].Spec)
+		}
 		response.Sections[key] = HomepageSectionResponse{
 			Title:  section.Title,
 			Source: section.Source,
@@ -371,6 +379,7 @@ func (h *SpecHandler) Home(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.attachCheckoutCoupons(r.Context(), couponSpecs)
 	w.Header().Set("Content-Type", "application/json")
 	log.Printf("[SpecHandler.Home] success sections=%d currency=%s", len(response.Sections), displayCurrency)
 	json.NewEncoder(w).Encode(response)
@@ -681,7 +690,31 @@ func (h *SpecHandler) GetUserSpecs(w http.ResponseWriter, r *http.Request) {
 		limit = 20
 	}
 
-	specs, total, err := h.service.GetUserSpecs(r.Context(), userID, page, limit)
+	var filters []domain.ProducerSpecFilter
+	if q.Has("category") || q.Has("search") || q.Has("ids") {
+		filter := domain.ProducerSpecFilter{BeatsOnly: q.Get("category") == "beat", Search: strings.TrimSpace(q.Get("search"))}
+		if (q.Has("category") && !filter.BeatsOnly) || len(filter.Search) > 200 {
+			http.Error(w, "invalid producer catalog filter", http.StatusBadRequest)
+			return
+		}
+		if q.Has("ids") {
+			rawIDs := strings.Split(q.Get("ids"), ",")
+			if len(rawIDs) > 100 {
+				http.Error(w, "too many spec IDs", http.StatusBadRequest)
+				return
+			}
+			for _, raw := range rawIDs {
+				id, err := uuid.Parse(raw)
+				if err != nil || id == uuid.Nil {
+					http.Error(w, "invalid spec ID", http.StatusBadRequest)
+					return
+				}
+				filter.IDs = append(filter.IDs, id)
+			}
+		}
+		filters = append(filters, filter)
+	}
+	specs, total, err := h.service.GetUserSpecs(r.Context(), userID, page, limit, filters...)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -711,6 +744,7 @@ func (h *SpecHandler) GetUserSpecs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.attachListCheckoutCoupons(r.Context(), responses)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"data": responses,

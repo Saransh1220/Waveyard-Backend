@@ -29,6 +29,7 @@ import (
 	paymentApplication "github.com/saransh1220/blueprint-audio/internal/modules/payment/application"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment/infrastructure/dodo"
 	"github.com/saransh1220/blueprint-audio/internal/modules/payment/infrastructure/razorpay"
+	"github.com/saransh1220/blueprint-audio/internal/modules/promotion"
 	"github.com/saransh1220/blueprint-audio/internal/modules/user"
 	"github.com/saransh1220/blueprint-audio/internal/shared/infrastructure/config"
 	"github.com/saransh1220/blueprint-audio/internal/shared/infrastructure/database"
@@ -140,6 +141,9 @@ func main() {
 
 	// Catalog Module
 	catalogModule := catalog.NewModule(db, specRepo, fsModule.Service(), analyticsModule.AnalyticsService, notificationModule.Service(), redisClient)
+	if cfg.CheckoutCouponsEnabled {
+		catalogModule.HTTPHandler().WithCheckoutCoupons(promotion.NewCheckoutCouponReader(db))
+	}
 
 	// Payment Module
 	paymentModule := payment.NewModule(db, catalogModule.SpecFinder(), authModule.UserFinder(), fsModule.Service(), emailSender, cfg.AppBaseURL, paymentGatewayConfig(cfg))
@@ -197,6 +201,7 @@ func main() {
 		SpecUploadHandler:       catalogModule.UploadHTTPHandler(),
 		UserHandler:             userModule.HTTPHandler(),
 		PaymentHandler:          paymentModule.HTTPHandler(),
+		PromotionHandler:        promotion.NewHandler(db),
 		CurrencyGatewayNames:    paymentModule.CurrencyGatewayNames(),
 		AnalyticsHandler:        analyticsModule.AnalyticsHandler,
 		NotificationHandler:     notificationModule.HTTPHandler(),
@@ -234,6 +239,7 @@ func main() {
 
 func paymentGatewayConfig(cfg config.Config) payment.GatewayConfig {
 	return payment.GatewayConfig{
+		CouponsEnabled: cfg.CheckoutCouponsEnabled,
 		Razorpay: razorpay.Config{
 			KeyID:         cfg.Razorpay.KeyID,
 			KeySecret:     cfg.Razorpay.KeySecret,

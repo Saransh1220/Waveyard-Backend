@@ -46,7 +46,7 @@ func (m *mockSpecService) DeleteSpec(ctx context.Context, id uuid.UUID, producer
 	return args.Error(0)
 }
 
-func (m *mockSpecService) GetUserSpecs(ctx context.Context, producerID uuid.UUID, page int, limit int) ([]domain.Spec, int, error) {
+func (m *mockSpecService) GetUserSpecs(ctx context.Context, producerID uuid.UUID, page int, limit int, filters ...domain.ProducerSpecFilter) ([]domain.Spec, int, error) {
 	args := m.Called(ctx, producerID, page, limit)
 	if args.Get(0) == nil {
 		return nil, args.Int(1), args.Error(2)

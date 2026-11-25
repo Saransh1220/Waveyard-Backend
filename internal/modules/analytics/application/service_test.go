@@ -142,7 +142,7 @@ func (m *mockSpecRepository) Delete(ctx context.Context, id uuid.UUID, producerI
 	args := m.Called(ctx, id, producerID)
 	return args.Error(0)
 }
-func (m *mockSpecRepository) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int) ([]catalogDomain.Spec, int, error) {
+func (m *mockSpecRepository) ListByUserID(ctx context.Context, producerID uuid.UUID, limit, offset int, _ ...catalogDomain.ProducerSpecFilter) ([]catalogDomain.Spec, int, error) {
 	args := m.Called(ctx, producerID, limit, offset)
 	if args.Get(0) == nil {
 		return nil, args.Int(1), args.Error(2)

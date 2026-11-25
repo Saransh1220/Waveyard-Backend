@@ -8,6 +8,31 @@ on:
 jobs:
   test-and-coverage:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: waveyard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d waveyard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: '5432'
+      TEST_DB_USER: postgres
+      TEST_DB_PASSWORD: postgres
+      TEST_DB_NAME: waveyard_test
+      TEST_DB_SSLMODE: disable
+      # The browser session test appends search_path in keyword DSN format.
+      AUTH_TEST_POSTGRES_URL: host=127.0.0.1 port=5432 user=postgres password=postgres dbname=waveyard_test sslmode=disable
+      TEST_PAYMENT_DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/waveyard_test?sslmode=disable
+      TEST_PROMOTIONS_DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/waveyard_test?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,6 +47,11 @@ jobs:
         env:
           GOFLAGS: -mod=mod
         run: go mod tidy
+
+      - name: Apply test database migrations
+        run: >-
+          go run -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
+          -path db/migrations -database "$TEST_PROMOTIONS_DB_URL" up
 
       - name: Run tests
         env:

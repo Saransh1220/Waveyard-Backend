@@ -35,7 +35,7 @@ type SpecService interface {
 	UpdateSpec(ctx context.Context, spec *domain.Spec, producerID uuid.UUID) error
 	UpdateFilesAndStatus(ctx context.Context, id uuid.UUID, files map[string]*string, status domain.ProcessingStatus) error
 	DeleteSpec(ctx context.Context, id uuid.UUID, producerId uuid.UUID) error
-	GetUserSpecs(ctx context.Context, producerID uuid.UUID, page, limit int) ([]domain.Spec, int, error)
+	GetUserSpecs(ctx context.Context, producerID uuid.UUID, page, limit int, filters ...domain.ProducerSpecFilter) ([]domain.Spec, int, error)
 	GetSpecByShortCode(ctx context.Context, code string) (*domain.Spec, error)
 	GetSpecBySlug(ctx context.Context, slug string) (*domain.Spec, error)
 	GetHome(ctx context.Context, params domain.HomepageParams) (*domain.HomepageData, error)
@@ -333,10 +333,10 @@ func isProcessingSpec(status domain.ProcessingStatus) bool {
 }
 
 // GetUserSpecs retrieves all specs for a specific producer with pagination
-func (s *specService) GetUserSpecs(ctx context.Context, producerID uuid.UUID, page, limit int) ([]domain.Spec, int, error) {
+func (s *specService) GetUserSpecs(ctx context.Context, producerID uuid.UUID, page, limit int, filters ...domain.ProducerSpecFilter) ([]domain.Spec, int, error) {
 	page, limit = normalizePageAndLimit(page, limit)
 	offset := (page - 1) * limit
-	return s.repo.ListByUserID(ctx, producerID, limit, offset)
+	return s.repo.ListByUserID(ctx, producerID, limit, offset, filters...)
 }
 
 func (s *specService) UpdateFilesAndStatus(ctx context.Context, id uuid.UUID, files map[string]*string, status domain.ProcessingStatus) error {

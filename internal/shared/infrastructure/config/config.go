@@ -16,21 +16,22 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	Server      ServerConfig
-	Database    database.PostgresConfig
-	Migration   MigrationConfig
-	Bootstrap   BootstrapConfig
-	Redis       database.RedisConfig
-	JWT         JWTConfig
-	Razorpay    RazorpayConfig
-	Dodo        DodoPaymentsConfig
-	Currency    CurrencyConfig
-	FX          FXConfig
-	FileStorage FileStorageConfig
-	Google      GoogleConfig
-	Email       EmailConfig
-	Worker      WorkerConfig
-	AppBaseURL  string
+	Server                 ServerConfig
+	Database               database.PostgresConfig
+	Migration              MigrationConfig
+	Bootstrap              BootstrapConfig
+	Redis                  database.RedisConfig
+	JWT                    JWTConfig
+	Razorpay               RazorpayConfig
+	Dodo                   DodoPaymentsConfig
+	CheckoutCouponsEnabled bool
+	Currency               CurrencyConfig
+	FX                     FXConfig
+	FileStorage            FileStorageConfig
+	Google                 GoogleConfig
+	Email                  EmailConfig
+	Worker                 WorkerConfig
+	AppBaseURL             string
 }
 
 // WorkerConfig holds media processor worker configuration
@@ -174,7 +175,8 @@ func Load() Config {
 			APIURL:     getEnv("DODO_PAYMENTS_API_URL", ""),
 			ReturnURL:  getEnv("DODO_RETURN_URL", ""),
 		},
-		Currency: CurrencyConfig{},
+		CheckoutCouponsEnabled: getEnv("CHECKOUT_COUPONS_ENABLED", "false") == "true",
+		Currency:               CurrencyConfig{},
 		FX: FXConfig{
 			Enabled:           getEnv("FX_ENABLED", "false") == "true",
 			ProviderURL:       getEnv("FX_PROVIDER_URL", "https://api.frankfurter.dev/v1/latest"),

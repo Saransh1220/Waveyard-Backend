@@ -12,6 +12,7 @@ import (
 	notification_domain "github.com/saransh1220/blueprint-audio/internal/modules/notification/domain"
 	payment_app "github.com/saransh1220/blueprint-audio/internal/modules/payment/application"
 	payment_domain "github.com/saransh1220/blueprint-audio/internal/modules/payment/domain"
+	promotion_domain "github.com/saransh1220/blueprint-audio/internal/modules/promotion/domain"
 	user_app "github.com/saransh1220/blueprint-audio/internal/modules/user/application"
 )
 
@@ -45,8 +46,15 @@ type VerifyPaymentResponse struct {
 }
 
 type CreateOrderRequest struct {
-	SpecID          string `json:"spec_id"`
-	LicenseOptionID string `json:"license_option_id"`
+	SpecID              string `json:"spec_id"`
+	LicenseOptionID     string `json:"license_option_id"`
+	Currency            string `json:"currency,omitempty"`
+	ExpectedPriceID     string `json:"expected_price_id,omitempty"`
+	ExpectedRevision    int64  `json:"expected_revision,omitempty"`
+	ExpectedAmountMinor int    `json:"expected_amount_minor,omitempty"`
+	ExpectedCurrency    string `json:"expected_currency,omitempty"`
+	QuoteID             string `json:"quote_id,omitempty"`
+	ResumeOnly          bool   `json:"resume_only,omitempty"`
 }
 
 type DownloadFreeResponse struct {
@@ -80,6 +88,59 @@ type AdminCreateRefundRequest struct {
 // GetEndpointsRegistry returns all route definitions mapped to real Go structs
 func GetEndpointsRegistry() []EndpointDef {
 	return []EndpointDef{
+		{
+			Method: "GET", Path: "/studio/promotions", Tags: []string{"Promotions"},
+			OperationID: "listProducerPromotions", Summary: "List your promotions",
+			Auth: "bearer", SuccessCode: 200,
+			QueryParams: []ParamDef{
+				{Name: "limit", Type: "integer", Description: "Page size (1–100, default 25)"},
+				{Name: "offset", Type: "integer", Description: "Page offset (0–10000)"},
+			},
+			ResponseBody: struct {
+				Data []promotion_domain.Promotion `json:"data"`
+			}{},
+		},
+		{
+			Method: "POST", Path: "/studio/promotions", Tags: []string{"Promotions"},
+			OperationID: "createProducerPromotion", Summary: "Create a producer coupon draft",
+			Auth: "bearer", SuccessCode: 201,
+			RequestBody: promotion_domain.Rules{}, ResponseBody: promotion_domain.Promotion{},
+		},
+		{
+			Method: "GET", Path: "/studio/promotions/{id}", Tags: []string{"Promotions"},
+			OperationID: "getProducerPromotion", Summary: "Get your promotion and latest draft rules",
+			Auth: "bearer", SuccessCode: 200,
+			PathParams:   []ParamDef{{Name: "id", Type: "string", Format: "uuid", Required: true}},
+			ResponseBody: promotion_domain.Promotion{},
+			Responses:    map[string]Response{"404": {Description: "Promotion not found"}},
+		},
+		{
+			Method: "GET", Path: "/studio/promotions/{id}/preview", Tags: []string{"Promotions"},
+			OperationID: "previewProducerPromotion", Summary: "Resolve eligible license option IDs for your current rules",
+			Auth: "bearer", SuccessCode: 200,
+			PathParams:   []ParamDef{{Name: "id", Type: "string", Format: "uuid", Required: true}},
+			ResponseBody: promotion_domain.Preview{},
+			Responses:    map[string]Response{"404": {Description: "Promotion not found"}},
+		},
+		{
+			Method: "POST", Path: "/studio/promotions/{id}/enrollment-check", Tags: []string{"Promotions"},
+			OperationID: "checkProducerPromotionEnrollment", Summary: "Check beat availability and overlapping published coupons",
+			Auth: "bearer", SuccessCode: 200,
+			PathParams:  []ParamDef{{Name: "id", Type: "string", Format: "uuid", Required: true}},
+			RequestBody: promotion_domain.EnrollmentCheckRequest{}, ResponseBody: promotion_domain.EnrollmentCheck{},
+		},
+		{
+			Method: "PATCH", Path: "/studio/promotions/{id}", Tags: []string{"Promotions"},
+			OperationID: "changeProducerPromotion", Summary: "Edit, publish, pause or archive your promotion",
+			Description: "Supply the current revision. Edit replaces the draft rules and enrollments atomically.",
+			Auth:        "bearer", SuccessCode: 200,
+			PathParams:  []ParamDef{{Name: "id", Type: "string", Format: "uuid", Required: true}},
+			RequestBody: promotion_domain.ChangeRequest{}, ResponseBody: promotion_domain.Promotion{},
+			Responses: map[string]Response{
+				"404": {Description: "Promotion not found"},
+				"409": {Description: "Revision changed, lifecycle action is unavailable, or a beat is in a published coupon with overlapping dates"},
+			},
+		},
 		// Operations
 		{
 			Method:      "GET",
@@ -497,6 +558,9 @@ func GetEndpointsRegistry() []EndpointDef {
 			QueryParams: []ParamDef{
 				{Name: "page", Type: "integer", Description: "Page number (1-based)"},
 				{Name: "limit", Type: "integer", Description: "Items per page"},
+				{Name: "category", Type: "string", Description: "Use beat to show only beats"},
+				{Name: "search", Type: "string", Description: "Search title, key and genre"},
+				{Name: "ids", Type: "string", Description: "Comma-separated spec IDs (up to 100)"},
 			},
 			SuccessCode:  200,
 			ResponseBody: []catalog_dto.SpecResponse{},
@@ -504,12 +568,30 @@ func GetEndpointsRegistry() []EndpointDef {
 
 		// Payments
 		{
+			Method:       "GET",
+			Path:         "/orders/quote",
+			Tags:         []string{"Payments"},
+			OperationID:  "getCheckoutQuote",
+			Summary:      "Quote a single license checkout",
+			Description:  "Returns stored base pricing, automatic coupon savings, and the payable subtotal to confirm with quote_id.",
+			SuccessCode:  200,
+			ResponseBody: payment_domain.CheckoutQuote{},
+			QueryParams: []ParamDef{
+				{Name: "spec_id", Type: "string", Required: true},
+				{Name: "license_option_id", Type: "string", Required: true},
+				{Name: "currency", Type: "string"},
+			},
+			Responses: map[string]Response{
+				"409": {Description: "Checkout price is unavailable"},
+			},
+		},
+		{
 			Method:       "POST",
 			Path:         "/orders",
 			Tags:         []string{"Payments"},
 			OperationID:  "createOrder",
 			Summary:      "Create order for beat license",
-			Description:  "Initiates checkout for a specific license option",
+			Description:  "Initiates checkout for a specific license option. Set resume_only with the original Idempotency-Key to recover a reserved checkout without creating a new order.",
 			Auth:         "bearer",
 			RequestBody:  CreateOrderRequest{},
 			SuccessCode:  200,
@@ -522,6 +604,7 @@ func GetEndpointsRegistry() []EndpointDef {
 					Description: "Checkout is in flight. Retry with the same key.",
 					Headers:     map[string]Header{"Retry-After": {Schema: &Property{Type: "integer"}}},
 				},
+				"404": {Description: "No reserved checkout matches the supplied key for this buyer"},
 				"409": {Description: "Idempotency key conflict, changed price, or unavailable offer"},
 			},
 		},

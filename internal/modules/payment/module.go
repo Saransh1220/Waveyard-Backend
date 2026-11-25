@@ -16,8 +16,9 @@ import (
 
 // GatewayConfig holds the credentials for every payment gateway.
 type GatewayConfig struct {
-	Razorpay razorpay.Config
-	Dodo     dodo.Config
+	Razorpay       razorpay.Config
+	Dodo           dodo.Config
+	CouponsEnabled bool
 }
 
 // Module represents the Payment module
@@ -43,7 +44,7 @@ func NewModule(
 	idempotencyRepo := persistence.NewIdempotencyRepository(db)
 	webhookRepo := persistence.NewWebhookRepository(db)
 	refundRepo := persistence.NewRefundRepository(db)
-	txRunner := persistence.NewTxRunner(db)
+	txRunner := persistence.NewCheckoutTxRunner(db, gateways.CouponsEnabled)
 
 	if gateways.Dodo.ReturnURL == "" {
 		gateways.Dodo.ReturnURL = appBaseURL + "/payment/return"
@@ -66,13 +67,15 @@ func NewModule(
 		SetIdempotencyRepository(domain.IdempotencyRepository)
 		SetWebhookRepository(domain.WebhookEventRepository)
 		SetRefundRepository(domain.RefundRepository)
+		EnableCheckoutQuotes()
 	}); ok {
 		s.SetIdempotencyRepository(idempotencyRepo)
 		s.SetWebhookRepository(webhookRepo)
 		s.SetRefundRepository(refundRepo)
+		s.EnableCheckoutQuotes()
 	}
 
-	handler := paymentHttp.NewPaymentHandler(service)
+	handler := paymentHttp.NewPaymentHandler(service, txRunner)
 
 	return &Module{
 		service:  service,
